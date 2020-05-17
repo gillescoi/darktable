@@ -31,7 +31,10 @@ dt_profiled_colormatrix_t;
 static dt_profiled_colormatrix_t dt_profiled_colormatrices[] =
 {
   // clang-format off
-
+  
+  // Gilles Coissac, CMP Digital Mini Target, strobe, well lit, made with dcamprof
+  { "SIGMA SIGMA DP2 Merrill",      {  13049,   -598,   8699}, { -14819,   12456,  -33459}, {11412,  -1858,     33009}, {9642,    10000,   8252}},
+  
   // Robert Park, ColorChecker Passport, strobe, well lit
   { "Pentax K-x",                   { 821548, 337357,  42923}, { 247818, 1042969, -218735}, { -4105, -293045, 1085129}, {792206, 821823, 668640}},
 
