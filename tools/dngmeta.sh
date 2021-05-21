@@ -57,15 +57,15 @@ MANGLED_MAKE_MODEL=$(echo "$MAKE" "$MODEL" | sed 's# CORPORATION##gi' | sed 's#C
 SOFTWARE=$(exiv2 -Pkt "$DNG" 2>/dev/null | grep 'Exif.Image.Software ' | awk '{print $2 " " $3 " " $4 " " $5 " " $6}')
 
 ILLUMINANT=$(exiv2 -Pkt "$DNG" 2>/dev/null | grep 'Exif.Image.CalibrationIlluminant2 ' | awk '{print $2}')
-MATRIX_XR=$(exiv2 -Pkt "$DNG" 2>/dev/null | grep 'Exif.Image.ColorMatrix2 ' | sed 's#/10000##g' | awk '{print $2}')
-MATRIX_XG=$(exiv2 -Pkt "$DNG" 2>/dev/null | grep 'Exif.Image.ColorMatrix2 ' | sed 's#/10000##g' | awk '{print $3}')
-MATRIX_XB=$(exiv2 -Pkt "$DNG" 2>/dev/null | grep 'Exif.Image.ColorMatrix2 ' | sed 's#/10000##g' | awk '{print $4}')
-MATRIX_YR=$(exiv2 -Pkt "$DNG" 2>/dev/null | grep 'Exif.Image.ColorMatrix2 ' | sed 's#/10000##g' | awk '{print $5}')
-MATRIX_YG=$(exiv2 -Pkt "$DNG" 2>/dev/null | grep 'Exif.Image.ColorMatrix2 ' | sed 's#/10000##g' | awk '{print $6}')
-MATRIX_YB=$(exiv2 -Pkt "$DNG" 2>/dev/null | grep 'Exif.Image.ColorMatrix2 ' | sed 's#/10000##g' | awk '{print $7}')
-MATRIX_ZR=$(exiv2 -Pkt "$DNG" 2>/dev/null | grep 'Exif.Image.ColorMatrix2 ' | sed 's#/10000##g' | awk '{print $8}')
-MATRIX_ZG=$(exiv2 -Pkt "$DNG" 2>/dev/null | grep 'Exif.Image.ColorMatrix2 ' | sed 's#/10000##g' | awk '{print $9}')
-MATRIX_ZB=$(exiv2 -Pkt "$DNG" 2>/dev/null | grep 'Exif.Image.ColorMatrix2 ' | sed 's#/10000##g' | awk '{print $10}')
+MATRIX_XR=$(exiv2 -Pkt -b "$DNG" 2>/dev/null | grep 'Exif.Image.ColorMatrix2 ' | sed 's#/10000##g' | awk '{print $2}')
+MATRIX_XG=$(exiv2 -Pkt -b "$DNG" 2>/dev/null | grep 'Exif.Image.ColorMatrix2 ' | sed 's#/10000##g' | awk '{print $3}')
+MATRIX_XB=$(exiv2 -Pkt -b "$DNG" 2>/dev/null | grep 'Exif.Image.ColorMatrix2 ' | sed 's#/10000##g' | awk '{print $4}')
+MATRIX_YR=$(exiv2 -Pkt -b "$DNG" 2>/dev/null | grep 'Exif.Image.ColorMatrix2 ' | sed 's#/10000##g' | awk '{print $5}')
+MATRIX_YG=$(exiv2 -Pkt -b "$DNG" 2>/dev/null | grep 'Exif.Image.ColorMatrix2 ' | sed 's#/10000##g' | awk '{print $6}')
+MATRIX_YB=$(exiv2 -Pkt -b "$DNG" 2>/dev/null | grep 'Exif.Image.ColorMatrix2 ' | sed 's#/10000##g' | awk '{print $7}')
+MATRIX_ZR=$(exiv2 -Pkt -b "$DNG" 2>/dev/null | grep 'Exif.Image.ColorMatrix2 ' | sed 's#/10000##g' | awk '{print $8}')
+MATRIX_ZG=$(exiv2 -Pkt -b "$DNG" 2>/dev/null | grep 'Exif.Image.ColorMatrix2 ' | sed 's#/10000##g' | awk '{print $9}')
+MATRIX_ZB=$(exiv2 -Pkt -b "$DNG" 2>/dev/null | grep 'Exif.Image.ColorMatrix2 ' | sed 's#/10000##g' | awk '{print $10}')
 
 WHITE=$(exiv2 -Pkt "$DNG" 2>/dev/null | grep 'Exif.SubImage1.WhiteLevel ' | awk '{print $2}' | bc)
 BLACK=$(exiv2 -Pkt "$DNG" 2>/dev/null | grep 'Exif.SubImage1.BlackLevel ' | awk '{print $2}' | bc)
@@ -129,7 +129,7 @@ if [[ $MAKE == FUJIFILM && $CFA_PATTERN_WIDTH == 6 && $CFA_PATTERN_HEIGHT == 6 ]
   echo -e "\t\t<CFA2 width=\"$CFA_PATTERN_WIDTH\" height=\"$CFA_PATTERN_HEIGHT\">"
   # The DNG's CFA pattern is mysteriously shifted horizontally for
   # 14-bit x-trans chips (despite it being stored unshifted in the raw
-  # file). Identify 14-bit cips by their max white value.
+  # file). Identify 14-bit chips by their max white value.
 
   # FIXME: this is definitively wrong. from rawspeed, DngDecoder::parseCFA():
   # the cfa is specified relative to the ActiveArea. we want it relative (0,0)

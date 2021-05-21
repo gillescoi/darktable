@@ -58,9 +58,9 @@ gchar *dt_util_dstrcat(gchar *str, const gchar *format, ...)
   va_list args;
   gchar *ns;
   va_start(args, format);
-  size_t clen = str ? strlen(str) : 0;
-  int alen = g_vsnprintf(NULL, 0, format, args);
-  int nsize = alen + clen + 1;
+  const size_t clen = str ? strlen(str) : 0;
+  const int alen = g_vsnprintf(NULL, 0, format, args);
+  const int nsize = alen + clen + 1;
 
   /* realloc for new string */
   ns = g_realloc(str, nsize);
@@ -131,15 +131,14 @@ gchar *dt_util_glist_to_str(const gchar *separator, GList *items)
   gchar *result = NULL;
 
   // add the entries to an char* array
-  items = g_list_first(items);
   gchar **strings = g_malloc0_n(count + 1, sizeof(gchar *));
   if(items != NULL)
   {
     int i = 0;
-    do
+    for(; items; items = g_list_next(items))
     {
       strings[i++] = items->data;
-    } while((items = g_list_next(items)) != NULL);
+    }
   }
 
   // join them into a single string
@@ -331,18 +330,18 @@ gchar *dt_util_foo_to_utf8(const char *string)
 // get easter sunday (in the western world)
 static void easter(int Y, int* month, int *day)
 {
-  int a  = Y % 19;
-  int b  = Y / 100;
-  int c  = Y % 100;
-  int d  = b / 4;
-  int e  = b % 4;
-  int f  = (b + 8) / 25;
-  int g  = (b - f + 1) / 3;
-  int h  = (19*a + b - d - g + 15) % 30;
-  int i  = c / 4;
-  int k  = c % 4;
-  int L  = (32 + 2*e + 2*i - h - k) % 7;
-  int m  = (a + 11*h + 22*L) / 451;
+  const int a  = Y % 19;
+  const int b  = Y / 100;
+  const int c  = Y % 100;
+  const int d  = b / 4;
+  const int e  = b % 4;
+  const int f  = (b + 8) / 25;
+  const int g  = (b - f + 1) / 3;
+  const int h  = (19*a + b - d - g + 15) % 30;
+  const int i  = c / 4;
+  const int k  = c % 4;
+  const int L  = (32 + 2*e + 2*i - h - k) % 7;
+  const int m  = (a + 11*h + 22*L) / 451;
   *month = (h + L - 7*m + 114) / 31;
   *day   = ((h + L - 7*m + 114) % 31) + 1;
 }
@@ -377,17 +376,11 @@ dt_logo_season_t dt_util_get_logo_season(void)
   return DT_LOGO_SEASON_NONE;
 }
 
-cairo_surface_t *dt_util_get_logo(float size)
+static cairo_surface_t *_util_get_svg_img(gchar *logo, const float size)
 {
   GError *error = NULL;
   cairo_surface_t *surface = NULL;
   char datadir[PATH_MAX] = { 0 };
-  char *logo;
-  dt_logo_season_t season = dt_util_get_logo_season();
-  if(season != DT_LOGO_SEASON_NONE)
-    logo = g_strdup_printf("idbutton-%d.svg", (int)season);
-  else
-    logo = g_strdup("idbutton.svg");
 
   dt_loc_get_datadir(datadir, sizeof(datadir));
   char *dtlogo = g_build_filename(datadir, "pixmaps", logo, NULL);
@@ -397,13 +390,13 @@ cairo_surface_t *dt_util_get_logo(float size)
     RsvgDimensionData dimension;
     rsvg_handle_get_dimensions(svg, &dimension);
 
-    float ppd = darktable.gui ? darktable.gui->ppd : 1.0;
+    const float ppd = darktable.gui ? darktable.gui->ppd : 1.0;
 
-    float svg_size = MAX(dimension.width, dimension.height);
-    float factor = size > 0.0 ? size / svg_size : -1.0 * size;
-    float final_width = dimension.width * factor * ppd,
-          final_height = dimension.height * factor * ppd;
-    int stride = cairo_format_stride_for_width(CAIRO_FORMAT_ARGB32, final_width);
+    const float svg_size = MAX(dimension.width, dimension.height);
+    const float factor = size > 0.0 ? size / svg_size : -1.0 * size;
+    const float final_width = dimension.width * factor * ppd,
+                final_height = dimension.height * factor * ppd;
+    const int stride = cairo_format_stride_for_width(CAIRO_FORMAT_ARGB32, final_width);
 
     guint8 *image_buffer = (guint8 *)calloc(stride * final_height, sizeof(guint8));
     if(darktable.gui)
@@ -442,6 +435,23 @@ cairo_surface_t *dt_util_get_logo(float size)
   return surface;
 }
 
+cairo_surface_t *dt_util_get_logo(const float size)
+{
+  char *logo;
+  const dt_logo_season_t season = dt_util_get_logo_season();
+  if(season != DT_LOGO_SEASON_NONE)
+    logo = g_strdup_printf("idbutton-%d.svg", (int)season);
+  else
+    logo = g_strdup("idbutton.svg");
+
+  return _util_get_svg_img(logo, size);
+}
+
+cairo_surface_t *dt_util_get_logo_text(const float size)
+{
+  return _util_get_svg_img(g_strdup("dt_text.svg"), size);
+}
+
 // the following two functions (dt_util_latitude_str and dt_util_longitude_str) were taken from libosmgpsmap
 // Copyright (C) 2013 John Stowers <john.stowers@gmail.com>
 /* these can be overwritten with versions that support
@@ -464,7 +474,7 @@ gchar *dt_util_latitude_str(float latitude)
 
   if(latitude < 0)
   {
-    latitude = fabs(latitude);
+    latitude = fabsf(latitude);
     c = OSD_COORDINATES_CHR_S;
   }
 
@@ -482,7 +492,7 @@ gchar *dt_util_longitude_str(float longitude)
 
   if(longitude < 0)
   {
-    longitude = fabs(longitude);
+    longitude = fabsf(longitude);
     c = OSD_COORDINATES_CHR_W;
   }
 
@@ -499,7 +509,7 @@ gchar *dt_util_elevation_str(float elevation)
 
   if(elevation < 0)
   {
-    elevation = fabs(elevation);
+    elevation = fabsf(elevation);
     c = OSD_ELEVATION_BSL;
   }
 
@@ -722,6 +732,92 @@ GList *dt_util_str_to_glist(const gchar *separator, const gchar *text)
   list = g_list_reverse(list);
   g_free(entry);
   return list;
+}
+
+// format exposure time given in seconds to a string in a unified way
+char *dt_util_format_exposure(const float exposuretime)
+{
+  char *result;
+  if(exposuretime >= 1.0f)
+  {
+    if(nearbyintf(exposuretime) == exposuretime)
+      result = g_strdup_printf("%.0f″", exposuretime);
+    else
+      result = g_strdup_printf("%.1f″", exposuretime);
+  }
+  /* want to catch everything below 0.3 seconds */
+  else if(exposuretime < 0.29f)
+    result = g_strdup_printf("1/%.0f", 1.0 / exposuretime);
+
+  /* catch 1/2, 1/3 */
+  else if(nearbyintf(1.0f / exposuretime) == 1.0f / exposuretime)
+    result = g_strdup_printf("1/%.0f", 1.0 / exposuretime);
+
+  /* catch 1/1.3, 1/1.6, etc. */
+  else if(10 * nearbyintf(10.0f / exposuretime) == nearbyintf(100.0f / exposuretime))
+    result = g_strdup_printf("1/%.1f", 1.0 / exposuretime);
+
+  else
+    result = g_strdup_printf("%.1f″", exposuretime);
+
+  return result;
+}
+
+char *dt_read_file(const char *const filename, size_t *filesize)
+{
+  if (filesize) *filesize = 0;
+  FILE *fd = g_fopen(filename, "rb");
+  if(!fd) return NULL;
+
+  fseek(fd, 0, SEEK_END);
+  size_t end = ftell(fd);
+  rewind(fd);
+
+  char *content = (char *)malloc(sizeof(char) * end);
+  if(!content) return NULL;
+
+  size_t count = fread(content, sizeof(char), end, fd);
+  fclose(fd);
+  if (count == end)
+  {
+    if (filesize) *filesize = end;
+    return content;
+  }
+  free(content);
+  return NULL;
+}
+
+void dt_copy_file(const char *const sourcefile, const char *dst)
+{
+  char *content = NULL;
+  FILE *fin = g_fopen(sourcefile, "rb");
+  FILE *fout = g_fopen(dst, "wb");
+
+  if(fin && fout)
+  {
+    fseek(fin, 0, SEEK_END);
+    size_t end = ftell(fin);
+    rewind(fin);
+    content = (char *)g_malloc_n(end, sizeof(char));
+    if(content == NULL) goto END;
+    if(fread(content, sizeof(char), end, fin) != end) goto END;
+    if(fwrite(content, sizeof(char), end, fout) != end) goto END;
+  }
+
+END:
+  if(fout != NULL) fclose(fout);
+  if(fin != NULL) fclose(fin);
+
+  g_free(content);
+}
+
+void dt_copy_resource_file(const char *src, const char *dst)
+{
+  char share[PATH_MAX] = { 0 };
+  dt_loc_get_datadir(share, sizeof(share));
+  gchar *sourcefile = g_build_filename(share, src, NULL);
+  dt_copy_file(sourcefile, dst);
+  g_free(sourcefile);
 }
 
 // modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh

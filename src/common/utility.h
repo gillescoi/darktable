@@ -57,7 +57,8 @@ typedef enum dt_logo_season_t
 /** returns the dt logo season to use right now */
 dt_logo_season_t dt_util_get_logo_season(void);
 
-cairo_surface_t *dt_util_get_logo(float size);
+cairo_surface_t *dt_util_get_logo(const float size);
+cairo_surface_t *dt_util_get_logo_text(const float size);
 
 gchar *dt_util_latitude_str(float latitude);
 gchar *dt_util_longitude_str(float longitude);
@@ -70,6 +71,19 @@ gboolean dt_util_gps_elevation_to_number(const double r_1, const double r_2, cha
 
 // make paths absolute and try to normalize on Windows. also deal with character encoding on Windows.
 gchar *dt_util_normalize_path(const gchar *input);
+
+// format exposure time string
+gchar *dt_util_format_exposure(const float exposuretime);
+
+// read the contents of the given file into a malloc'ed buffer
+// returns NULL if unable to read file or alloc memory; sets filesize to the number of bytes returned
+char *dt_read_file(const char *filename, size_t *filesize);
+
+// copy the contents of the given file to a new file
+void dt_copy_file(const char *src, const char *dst);
+
+// copy the contents of a file in dt's data directory to a new file
+void dt_copy_resource_file(const char *src, const char *dst);
 
 // modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh
 // vim: shiftwidth=2 expandtab tabstop=2 cindent

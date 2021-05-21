@@ -55,31 +55,32 @@ typedef struct dt_culling_t
   int view_width, view_height; // last main widget size
   GdkRectangle thumbs_area;    // coordinate of all the currently loaded thumbs area
 
-  gboolean mouse_inside; // is the mouse pointer inside thumbatable widget ?
-
-  GSList *accel_closures; // list of associated accels
-
-  // when performing a drag, we store the list of items to drag here
-  // as this can change during the drag and drop (esp. because of the image_over_id)
-  GList *drag_list;
-
   gboolean navigate_inside_selection; // do we navigate inside selection or inside full collection
   gboolean selection_sync;            // should the selection follow current culling images
 
   gboolean select_desactivate;
 
-  gboolean panning; // are we moving zoomed images ?
-  int pan_x;        // last position during panning
-  int pan_y;        //
+  // the global zoom level of all images in the culling view.
+  // scales images from 0 "image to fit" to 1 "100% zoom".
+  float zoom_ratio;
+
+  gboolean panning;      // are we moving zoomed images ?
+  double pan_x;          // last position during panning
+  double pan_y;          //
+  gboolean mouse_inside; // is the mouse inside culling center view ?
 
   gboolean focus; // do we show focus rectangles on images ?
+
+  dt_thumbnail_overlay_t overlays; // overlays type
+  int overlays_block_timeout;      // overlay block visibility duration
+  gboolean show_tooltips;          // are tooltips visible ?
 } dt_culling_t;
 
 dt_culling_t *dt_culling_new(dt_culling_mode_t mode);
 // reload all thumbs from scratch.
 void dt_culling_full_redraw(dt_culling_t *table, gboolean force);
-// intialise culling offset/naviagtion mode, etc before entering.
-// if offset is > 0 it'll be used as offset, otherwise offset wil be determined by other means
+// initialise culling offset/naviagtion mode, etc before entering.
+// if offset is > 0 it'll be used as offset, otherwise offset will be determined by other means
 void dt_culling_init(dt_culling_t *table, int offset);
 // move by key actions.
 // this key accels are not managed here but inside view
@@ -89,9 +90,14 @@ gboolean dt_culling_key_move(dt_culling_t *table, dt_culling_move_t move);
 // because this may means that other images have changed
 void dt_culling_change_offset_image(dt_culling_t *table, int offset);
 
-void dt_culling_zoom_max(dt_culling_t *table, gboolean only_current);
-void dt_culling_zoom_fit(dt_culling_t *table, gboolean only_current);
+void dt_culling_zoom_max(dt_culling_t *table);
+void dt_culling_zoom_fit(dt_culling_t *table);
 
+// set the overlays type
+void dt_culling_set_overlays_mode(dt_culling_t *table, dt_thumbnail_overlay_t over);
+
+// update active images list
+void dt_culling_update_active_images_list(dt_culling_t *table);
 // modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh
 // vim: shiftwidth=2 expandtab tabstop=2 cindent
 // kate: tab-indents: off; indent-width 2; replace-tabs on; indent-mode cstyle; remove-trailing-spaces modified;

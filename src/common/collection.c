@@ -22,6 +22,7 @@
 #include "common/imageio_rawspeed.h"
 #include "common/metadata.h"
 #include "common/utility.h"
+#include "common/map_locations.h"
 #include "control/conf.h"
 #include "control/control.h"
 
@@ -81,33 +82,34 @@ const dt_collection_t *dt_collection_new(const dt_collection_t *clone)
     collection->clone = 1;
     collection->count = clone->count;
     collection->count_no_group = clone->count_no_group;
+    collection->tagid = clone->tagid;
   }
   else /* else we just initialize using the reset */
     dt_collection_reset(collection);
 
   /* connect to all the signals that might indicate that the count of images matching the collection changed
    */
-  dt_control_signal_connect(darktable.signals, DT_SIGNAL_TAG_CHANGED,
+  DT_DEBUG_CONTROL_SIGNAL_CONNECT(darktable.signals, DT_SIGNAL_TAG_CHANGED,
                             G_CALLBACK(_dt_collection_recount_callback_1), collection);
-  dt_control_signal_connect(darktable.signals, DT_SIGNAL_FILMROLLS_CHANGED,
+  DT_DEBUG_CONTROL_SIGNAL_CONNECT(darktable.signals, DT_SIGNAL_FILMROLLS_CHANGED,
                             G_CALLBACK(_dt_collection_recount_callback_1), collection);
-  dt_control_signal_connect(darktable.signals, DT_SIGNAL_FILMROLLS_REMOVED,
+  DT_DEBUG_CONTROL_SIGNAL_CONNECT(darktable.signals, DT_SIGNAL_FILMROLLS_REMOVED,
                             G_CALLBACK(_dt_collection_recount_callback_1), collection);
 
-  dt_control_signal_connect(darktable.signals, DT_SIGNAL_IMAGE_IMPORT,
+  DT_DEBUG_CONTROL_SIGNAL_CONNECT(darktable.signals, DT_SIGNAL_IMAGE_IMPORT,
                             G_CALLBACK(_dt_collection_recount_callback_2), collection);
-  dt_control_signal_connect(darktable.signals, DT_SIGNAL_FILMROLLS_IMPORTED,
+  DT_DEBUG_CONTROL_SIGNAL_CONNECT(darktable.signals, DT_SIGNAL_FILMROLLS_IMPORTED,
                             G_CALLBACK(_dt_collection_filmroll_imported_callback), collection);
   return collection;
 }
 
 void dt_collection_free(const dt_collection_t *collection)
 {
-  dt_control_signal_disconnect(darktable.signals, G_CALLBACK(_dt_collection_recount_callback_1),
+  DT_DEBUG_CONTROL_SIGNAL_DISCONNECT(darktable.signals, G_CALLBACK(_dt_collection_recount_callback_1),
                                (gpointer)collection);
-  dt_control_signal_disconnect(darktable.signals, G_CALLBACK(_dt_collection_recount_callback_2),
+  DT_DEBUG_CONTROL_SIGNAL_DISCONNECT(darktable.signals, G_CALLBACK(_dt_collection_recount_callback_2),
                                (gpointer)collection);
-  dt_control_signal_disconnect(darktable.signals, G_CALLBACK(_dt_collection_filmroll_imported_callback),
+  DT_DEBUG_CONTROL_SIGNAL_DISCONNECT(darktable.signals, G_CALLBACK(_dt_collection_filmroll_imported_callback),
                                (gpointer)collection);
 
   g_free(collection->query);
@@ -177,6 +179,26 @@ void dt_collection_memory_update()
   g_free(ins_query);
 }
 
+static void _dt_collection_set_selq_pre_sort(const dt_collection_t *collection, char **selq_pre)
+{
+  const uint32_t tagid = collection->tagid;
+  char tag[16] = { 0 };
+  snprintf(tag, sizeof(tag), "%d", tagid);
+
+  *selq_pre = dt_util_dstrcat(*selq_pre,
+                              "SELECT DISTINCT mi.id FROM (SELECT"
+                              "  id, group_id, film_id, filename, datetime_taken, "
+                              "  flags, version, %s position, aspect_ratio,"
+                              "  maker, model, lens, aperture, exposure, focal_length,"
+                              "  iso, import_timestamp, change_timestamp,"
+                              "  export_timestamp, print_timestamp"
+                              "  FROM main.images AS mi %s%s WHERE ",
+                              tagid ? "CASE WHEN ti.position IS NULL THEN 0 ELSE ti.position END AS" : "",
+                              tagid ? " LEFT JOIN main.tagged_images AS ti"
+                                      " ON ti.imgid = mi.id AND ti.tagid = " : "",
+                              tagid ? tag : "");
+}
+
 int dt_collection_update(const dt_collection_t *collection)
 {
   uint32_t result;
@@ -221,9 +243,9 @@ int dt_collection_update(const dt_collection_t *collection)
                            rejected_check);
 
     if(collection->params.filter_flags & COLLECTION_FILTER_ALTERED)
-      wq = dt_util_dstrcat(wq, " %s id IN (SELECT imgid FROM main.history WHERE imgid=mi.id)", and_operator(&and_term));
+      wq = dt_util_dstrcat(wq, " %s id IN (SELECT imgid FROM main.images, main.history_hash WHERE imgid=mi.id AND history_hash.imgid=id AND (basic_hash IS NULL OR current_hash != basic_hash) AND (auto_hash IS NULL OR current_hash != auto_hash))", and_operator(&and_term));
     else if(collection->params.filter_flags & COLLECTION_FILTER_UNALTERED)
-      wq = dt_util_dstrcat(wq, " %s id NOT IN (SELECT imgid FROM main.history WHERE imgid=mi.id)", and_operator(&and_term));
+      wq = dt_util_dstrcat(wq, " %s id IN (SELECT imgid FROM main.images, main.history_hash WHERE imgid=mi.id AND history_hash.imgid=id AND (current_hash == basic_hash OR current_hash == auto_hash))", and_operator(&and_term));
 
     /* add where ext if wanted */
     if((collection->params.query_flags & COLLECTION_QUERY_USE_WHERE_EXT))
@@ -267,7 +289,7 @@ int dt_collection_update(const dt_collection_t *collection)
        && collection->params.sort_second_order == DT_COLLECTION_SORT_COLOR))
      && (collection->params.query_flags & COLLECTION_QUERY_USE_SORT))
   {
-    selq_pre = dt_util_dstrcat(selq_pre, "SELECT DISTINCT mi.id FROM (SELECT * FROM main.images AS mi WHERE ");
+    _dt_collection_set_selq_pre_sort(collection, &selq_pre);
     selq_post = dt_util_dstrcat
       (selq_post,
        ") AS mi LEFT OUTER JOIN main.color_labels AS b ON mi.id = b.imgid"
@@ -280,7 +302,7 @@ int dt_collection_update(const dt_collection_t *collection)
        && collection->params.sort_second_order == DT_COLLECTION_SORT_COLOR))
      && (collection->params.query_flags & COLLECTION_QUERY_USE_SORT))
   {
-    selq_pre = dt_util_dstrcat(selq_pre, "SELECT DISTINCT mi.id FROM (SELECT * FROM main.images AS mi WHERE ");
+    _dt_collection_set_selq_pre_sort(collection, &selq_pre);
     selq_post = dt_util_dstrcat
       (selq_post,
        ") AS mi LEFT OUTER JOIN main.color_labels AS b ON mi.id = b.imgid"
@@ -293,7 +315,7 @@ int dt_collection_update(const dt_collection_t *collection)
        && collection->params.sort_second_order == DT_COLLECTION_SORT_COLOR))
      && (collection->params.query_flags & COLLECTION_QUERY_USE_SORT))
   {
-    selq_pre = dt_util_dstrcat(selq_pre, "SELECT DISTINCT mi.id FROM (SELECT * FROM main.images AS mi WHERE ");
+    _dt_collection_set_selq_pre_sort(collection, &selq_pre);
     selq_post = dt_util_dstrcat
       (selq_post,
        ") AS mi LEFT OUTER JOIN main.color_labels AS b ON mi.id = b.imgid"
@@ -306,7 +328,7 @@ int dt_collection_update(const dt_collection_t *collection)
        && collection->params.sort_second_order == DT_COLLECTION_SORT_TITLE))
      && (collection->params.query_flags & COLLECTION_QUERY_USE_SORT))
   {
-    selq_pre = dt_util_dstrcat(selq_pre, "SELECT DISTINCT mi.id FROM (SELECT * FROM main.images AS mi WHERE ");
+    _dt_collection_set_selq_pre_sort(collection, &selq_pre);
     selq_post = dt_util_dstrcat(selq_post, ") AS mi JOIN (SELECT id AS film_rolls_id, folder FROM main.film_rolls) ON film_id = film_rolls_id"
                                                                         " LEFT OUTER JOIN main.meta_data AS m ON mi.id = m.id AND m.key = %d",DT_METADATA_XMP_DC_TITLE);
   }
@@ -317,7 +339,7 @@ int dt_collection_update(const dt_collection_t *collection)
        && collection->params.sort_second_order == DT_COLLECTION_SORT_DESCRIPTION))
      && (collection->params.query_flags & COLLECTION_QUERY_USE_SORT))
   {
-    selq_pre = dt_util_dstrcat(selq_pre, "SELECT DISTINCT mi.id FROM (SELECT * FROM main.images AS mi WHERE ");
+    _dt_collection_set_selq_pre_sort(collection, &selq_pre);
     selq_post = dt_util_dstrcat
       (selq_post,
        ") AS mi JOIN (SELECT id AS film_rolls_id, folder FROM main.film_rolls) ON film_id = film_rolls_id"
@@ -330,7 +352,7 @@ int dt_collection_update(const dt_collection_t *collection)
        && collection->params.sort_second_order == DT_COLLECTION_SORT_DESCRIPTION))
      && (collection->params.query_flags & COLLECTION_QUERY_USE_SORT))
   {
-    selq_pre = dt_util_dstrcat(selq_pre, "SELECT DISTINCT mi.id FROM (SELECT * FROM main.images AS mi WHERE ");
+    _dt_collection_set_selq_pre_sort(collection, &selq_pre);
     selq_post = dt_util_dstrcat
       (selq_post,
        ") AS mi LEFT OUTER JOIN main.meta_data AS m ON mi.id = m.id AND (m.key = %d OR m.key = %d)",
@@ -341,7 +363,7 @@ int dt_collection_update(const dt_collection_t *collection)
       ||collection->params.sort_second_order == DT_COLLECTION_SORT_COLOR)
      && (collection->params.query_flags & COLLECTION_QUERY_USE_SORT))
   {
-    selq_pre = dt_util_dstrcat(selq_pre, "SELECT DISTINCT mi.id FROM (SELECT * FROM main.images AS mi WHERE ");
+    _dt_collection_set_selq_pre_sort(collection, &selq_pre);
     selq_post = dt_util_dstrcat(selq_post, ") AS mi LEFT OUTER JOIN main.color_labels AS b ON mi.id = b.imgid");
   }
   /* only PATH */
@@ -349,7 +371,7 @@ int dt_collection_update(const dt_collection_t *collection)
           ||collection->params.sort_second_order == DT_COLLECTION_SORT_PATH)
           && (collection->params.query_flags & COLLECTION_QUERY_USE_SORT))
   {
-    selq_pre = dt_util_dstrcat(selq_pre, "SELECT DISTINCT mi.id FROM (SELECT * FROM main.images AS mi WHERE ");
+    _dt_collection_set_selq_pre_sort(collection, &selq_pre);
     selq_post = dt_util_dstrcat
       (selq_post,
        ") AS mi JOIN (SELECT id AS film_rolls_id, folder FROM main.film_rolls) ON film_id = film_rolls_id");
@@ -359,7 +381,7 @@ int dt_collection_update(const dt_collection_t *collection)
         ||collection->params.sort_second_order == DT_COLLECTION_SORT_TITLE)
           && (collection->params.query_flags & COLLECTION_QUERY_USE_SORT))
   {
-    selq_pre = dt_util_dstrcat(selq_pre, "SELECT DISTINCT mi.id FROM (SELECT * FROM main.images AS mi WHERE ");
+    _dt_collection_set_selq_pre_sort(collection, &selq_pre);
     selq_post = dt_util_dstrcat(selq_post, ") AS mi LEFT OUTER JOIN main.meta_data AS m ON mi.id = m.id AND m.key = %d ",
                                 DT_METADATA_XMP_DC_TITLE);
   }
@@ -368,16 +390,46 @@ int dt_collection_update(const dt_collection_t *collection)
         ||collection->params.sort_second_order == DT_COLLECTION_SORT_DESCRIPTION)
           && (collection->params.query_flags & COLLECTION_QUERY_USE_SORT))
   {
-    selq_pre = dt_util_dstrcat(selq_pre, "SELECT DISTINCT mi.id FROM (SELECT * FROM main.images AS mi WHERE ");
+    _dt_collection_set_selq_pre_sort(collection, &selq_pre);
     selq_post = dt_util_dstrcat
       (selq_post, ") AS mi LEFT OUTER JOIN main.meta_data AS m ON mi.id = m.id AND m.key = %d ",
        DT_METADATA_XMP_DC_DESCRIPTION);
   }
   else if(collection->params.query_flags & COLLECTION_QUERY_USE_ONLY_WHERE_EXT)
-    selq_pre = dt_util_dstrcat(selq_pre, "SELECT DISTINCT images.id FROM main.images AS mi ");
+  {
+    const uint32_t tagid = collection->tagid;
+    char tag[16] = { 0 };
+    snprintf(tag, sizeof(tag), "%d", tagid);
+    selq_pre = dt_util_dstrcat(selq_pre,
+                               "SELECT DISTINCT mi.id FROM (SELECT"
+                               "  id, group_id, film_id, filename, datetime_taken, "
+                               "  flags, version, %s position, aspect_ratio,"
+                               "  maker, model, lens, aperture, exposure, focal_length,"
+                               "  iso, import_timestamp, change_timestamp,"
+                               "  export_timestamp, print_timestamp"
+                               "  FROM main.images AS mi %s%s ) AS mi ",
+                               tagid ? "CASE WHEN ti.position IS NULL THEN 0 ELSE ti.position END AS" : "",
+                               tagid ? " LEFT JOIN main.tagged_images AS ti"
+                                       " ON ti.imgid = mi.id AND ti.tagid = " : "",
+                               tagid ? tag : "");
+  }
   else
   {
-    selq_pre = dt_util_dstrcat(selq_pre, "SELECT DISTINCT mi.id FROM images AS mi WHERE ");
+    const uint32_t tagid = collection->tagid;
+    char tag[16] = { 0 };
+    snprintf(tag, sizeof(tag), "%d", tagid);
+    selq_pre = dt_util_dstrcat(selq_pre,
+                               "SELECT DISTINCT mi.id FROM (SELECT"
+                               "  id, group_id, film_id, filename, datetime_taken, "
+                               "  flags, version, %s position, aspect_ratio,"
+                               "  maker, model, lens, aperture, exposure, focal_length,"
+                               "  iso, import_timestamp, change_timestamp,"
+                               "  export_timestamp, print_timestamp"
+                               "  FROM main.images AS mi %s%s ) AS mi WHERE ",
+                               tagid ? "CASE WHEN ti.position IS NULL THEN 0 ELSE ti.position END AS" : "",
+                               tagid ? " LEFT JOIN main.tagged_images AS ti"
+                                       " ON ti.imgid = mi.id AND ti.tagid = " : "",
+                               tagid ? tag : "");
   }
 
 
@@ -518,10 +570,15 @@ void dt_collection_set_extended_where(const dt_collection_t *collection, gchar *
   ((dt_collection_t *)collection)->where_ext = g_strdupv(extended_where);
 }
 
-void dt_collection_set_film_id(const dt_collection_t *collection, uint32_t film_id)
+void dt_collection_set_film_id(const dt_collection_t *collection, const int32_t film_id)
 {
   dt_collection_params_t *params = (dt_collection_params_t *)&collection->params;
   params->film_id = film_id;
+}
+
+void dt_collection_set_tag_id(dt_collection_t *collection, const uint32_t tagid)
+{
+  collection->tagid = tagid;
 }
 
 void dt_collection_set_rating(const dt_collection_t *collection, uint32_t rating)
@@ -565,7 +622,10 @@ static void _collection_update_aspect_ratio(const dt_collection_t *collection)
     sqlite3_stmt *stmt = NULL;
 
     query = dt_util_dstrcat
-      (query, "SELECT id FROM main.images WHERE %s AND (aspect_ratio=0.0 OR aspect_ratio IS NULL)", where_ext);
+      (query,
+       "SELECT id"
+       " FROM main.images"
+       " WHERE %s AND (aspect_ratio=0.0 OR aspect_ratio IS NULL)", where_ext);
 
     DT_DEBUG_SQLITE3_PREPARE_V2(dt_database_get(darktable.db), query, -1, &stmt, NULL);
 
@@ -616,7 +676,7 @@ const char *dt_collection_name(dt_collection_properties_t prop)
   switch(prop)
   {
     case DT_COLLECTION_PROP_FILMROLL:         return _("film roll");
-    case DT_COLLECTION_PROP_FOLDERS:          return _("folders");
+    case DT_COLLECTION_PROP_FOLDERS:          return _("folder");
     case DT_COLLECTION_PROP_CAMERA:           return _("camera");
     case DT_COLLECTION_PROP_TAG:              return _("tag");
     case DT_COLLECTION_PROP_DAY:              return _("date taken");
@@ -652,6 +712,7 @@ const char *dt_collection_name(dt_collection_properties_t prop)
           const char *name = (gchar *)dt_metadata_get_name_by_display_order(i);
           char *setting = dt_util_dstrcat(NULL, "plugins/lighttable/metadata/%s_flag", name);
           const gboolean hidden = dt_conf_get_int(setting) & DT_METADATA_FLAG_HIDDEN;
+          free(setting);
           if(!hidden) col_name = _(name);
         }
       }
@@ -717,10 +778,10 @@ gchar *dt_collection_get_sort_query(const dt_collection_t *collection)
       second_order = dt_util_dstrcat(NULL, "position %s", (collection->params.descending ? "DESC" : ""));
       break;
 
-    case DT_COLLECTION_SORT_TITLE:
-    case DT_COLLECTION_SORT_DESCRIPTION:/*same sorting for TITLE and DESCRIPTION -> Fall through*/
-      second_order = dt_util_dstrcat(NULL, "m.value %s, caption %s", (collection->params.descending ? "DESC" : ""), (collection->params.descending ? "DESC" : ""));
-      break;
+     case DT_COLLECTION_SORT_TITLE:
+     case DT_COLLECTION_SORT_DESCRIPTION:/*same sorting for TITLE and DESCRIPTION -> Fall through*/
+       second_order = dt_util_dstrcat(NULL, "m.value %s", (collection->params.descending ? "DESC" : ""));
+       break;
 
     case DT_COLLECTION_SORT_ASPECT_RATIO:
       second_order = dt_util_dstrcat(NULL, "aspect_ratio %s", (collection->params.descending ? "DESC" : ""));
@@ -794,11 +855,11 @@ gchar *dt_collection_get_sort_query(const dt_collection_t *collection)
         break;
 
       case DT_COLLECTION_SORT_TITLE:
-        sq = dt_util_dstrcat(sq, "ORDER BY m.value DESC, caption DESC, %s, filename DESC, version DESC", second_order);
+        sq = dt_util_dstrcat(sq, "ORDER BY m.value DESC, filename DESC, version DESC");
         break;
 
       case DT_COLLECTION_SORT_DESCRIPTION:
-        sq = dt_util_dstrcat(sq, "ORDER BY m.value DESC, description DESC, %s, filename DESC, version DESC", second_order);
+        sq = dt_util_dstrcat(sq, "ORDER BY m.value DESC, filename DESC, version DESC");
         break;
 
       case DT_COLLECTION_SORT_ASPECT_RATIO:
@@ -873,11 +934,11 @@ gchar *dt_collection_get_sort_query(const dt_collection_t *collection)
         break;
 
       case DT_COLLECTION_SORT_TITLE:
-        sq = dt_util_dstrcat(sq, "ORDER BY m.value, caption, %s, filename, version", second_order);
+        sq = dt_util_dstrcat(sq, "ORDER BY m.value, filename, version");
         break;
 
       case DT_COLLECTION_SORT_DESCRIPTION:
-        sq = dt_util_dstrcat(sq, "ORDER BY m.value, description, %s, filename, version", second_order);
+        sq = dt_util_dstrcat(sq, "ORDER BY m.value, filename, version");
         break;
 
       case DT_COLLECTION_SORT_ASPECT_RATIO:
@@ -1019,14 +1080,14 @@ GList *dt_collection_get(const dt_collection_t *collection, int limit, gboolean 
     while(sqlite3_step(stmt) == SQLITE_ROW)
     {
       const int imgid = sqlite3_column_int(stmt, 0);
-      list = g_list_append(list, GINT_TO_POINTER(imgid));
+      list = g_list_prepend(list, GINT_TO_POINTER(imgid));
     }
 
     sqlite3_finalize(stmt);
     g_free(q);
   }
 
-  return list;
+  return g_list_reverse(list);  // list built in reverse order, so un-reverse it
 }
 
 GList *dt_collection_get_all(const dt_collection_t *collection, int limit)
@@ -1073,14 +1134,13 @@ void dt_collection_split_operator_number(const gchar *input, char **number1, cha
 {
   GRegex *regex;
   GMatchInfo *match_info;
-  int match_count;
 
   *number1 = *number2 = *operator= NULL;
 
   // we test the range expression first
   regex = g_regex_new("^\\s*\\[\\s*([0-9]+\\.?[0-9]*)\\s*;\\s*([0-9]+\\.?[0-9]*)\\s*\\]\\s*$", 0, 0, NULL);
   g_regex_match_full(regex, input, -1, 0, 0, &match_info, NULL);
-  match_count = g_match_info_get_match_count(match_info);
+  int match_count = g_match_info_get_match_count(match_info);
 
   if(match_count == 3)
   {
@@ -1118,7 +1178,7 @@ void dt_collection_split_operator_number(const gchar *input, char **number1, cha
 
 static char *_dt_collection_compute_datetime(const char *operator, const char *input)
 {
-  int len = strlen(input);
+  const int len = strlen(input);
   if(len < 4) return NULL;
 
   struct tm tm1 = { 0 };
@@ -1188,7 +1248,6 @@ void dt_collection_split_operator_datetime(const gchar *input, char **number1, c
 {
   GRegex *regex;
   GMatchInfo *match_info;
-  int match_count;
 
   *number1 = *number2 = *operator= NULL;
 
@@ -1196,7 +1255,7 @@ void dt_collection_split_operator_datetime(const gchar *input, char **number1, c
   // 2 elements : date-time1 and  date-time2
   regex = g_regex_new("^\\s*\\[\\s*(\\d{4}[:\\d\\s]*)\\s*;\\s*(\\d{4}[:\\d\\s]*)\\s*\\]\\s*$", 0, 0, NULL);
   g_regex_match_full(regex, input, -1, 0, 0, &match_info, NULL);
-  match_count = g_match_info_get_match_count(match_info);
+  int match_count = g_match_info_get_match_count(match_info);
 
   if(match_count == 3)
   {
@@ -1247,14 +1306,13 @@ void dt_collection_split_operator_exposure(const gchar *input, char **number1, c
 {
   GRegex *regex;
   GMatchInfo *match_info;
-  int match_count;
 
   *number1 = *number2 = *operator= NULL;
 
   // we test the range expression first
   regex = g_regex_new("^\\s*\\[\\s*(1/)?([0-9]+\\.?[0-9]*)(\")?\\s*;\\s*(1/)?([0-9]+\\.?[0-9]*)(\")?\\s*\\]\\s*$", 0, 0, NULL);
   g_regex_match_full(regex, input, -1, 0, 0, &match_info, NULL);
-  match_count = g_match_info_get_match_count(match_info);
+  int match_count = g_match_info_get_match_count(match_info);
 
   if(match_count == 6 || match_count == 7)
   {
@@ -1311,26 +1369,33 @@ void dt_collection_get_makermodels(const gchar *filter, GList **sanitized, GList
 {
   sqlite3_stmt *stmt;
   gchar *needle = NULL;
+  gboolean wildcard = FALSE;
 
   GHashTable *names = NULL;
   if (sanitized)
     names = g_hash_table_new(g_str_hash, g_str_equal);
 
   if (filter && filter[0] != '\0')
+  {
     needle = g_utf8_strdown(filter, -1);
+    wildcard = (needle && needle[strlen(needle) - 1] == '%') ? TRUE : FALSE;
+    if(wildcard)
+      needle[strlen(needle) - 1] = '\0';
+  }
 
   DT_DEBUG_SQLITE3_PREPARE_V2(dt_database_get(darktable.db),
                               "SELECT maker, model FROM main.images GROUP BY maker, model",
                               -1, &stmt, NULL);
   while(sqlite3_step(stmt) == SQLITE_ROW)
   {
-    char *exif_maker = (char *)sqlite3_column_text(stmt, 0);
-    char *exif_model = (char *)sqlite3_column_text(stmt, 1);
+    const char *exif_maker = (char *)sqlite3_column_text(stmt, 0);
+    const char *exif_model = (char *)sqlite3_column_text(stmt, 1);
 
     gchar *makermodel =  dt_collection_get_makermodel(exif_maker, exif_model);
 
     gchar *haystack = g_utf8_strdown(makermodel, -1);
-    if (!needle || g_strrstr(haystack, needle) != NULL)
+    if (!needle || (wildcard && g_strrstr(haystack, needle) != NULL)
+                || (!wildcard && !g_strcmp0(haystack, needle)))
     {
       if (exif)
       {
@@ -1383,30 +1448,50 @@ gchar *dt_collection_get_makermodel(const char *exif_maker, const char *exif_mod
 static gchar *get_query_string(const dt_collection_properties_t property, const gchar *text)
 {
   char *escaped_text = sqlite3_mprintf("%q", text);
+  const unsigned int escaped_length = strlen(escaped_text);
   gchar *query = NULL;
 
   switch(property)
   {
     case DT_COLLECTION_PROP_FILMROLL: // film roll
       if(!(escaped_text && *escaped_text))
-        query = dt_util_dstrcat(query, "(film_id IN (SELECT id FROM main.film_rolls WHERE folder LIKE '%s%%'))",
+        query = g_strdup_printf("(film_id IN (SELECT id FROM main.film_rolls WHERE folder LIKE '%s%%'))",
                                 escaped_text);
       else
-        query = dt_util_dstrcat(query, "(film_id IN (SELECT id FROM main.film_rolls WHERE folder LIKE '%s'))",
+        query = g_strdup_printf("(film_id IN (SELECT id FROM main.film_rolls WHERE folder LIKE '%s'))",
                                 escaped_text);
       break;
 
     case DT_COLLECTION_PROP_FOLDERS: // folders
-      query = dt_util_dstrcat(
-          query, "(film_id IN (SELECT id FROM main.film_rolls WHERE folder LIKE '%s' OR folder LIKE '%s"
-                 G_DIR_SEPARATOR_S "%%'))",
-          escaped_text, escaped_text);
+      {
+        // replace * at the end with OR-clause to include subfolders
+        if ((escaped_length > 0) && (escaped_text[escaped_length-1] == '*'))
+        {
+          escaped_text[escaped_length-1] = '\0';
+          query = g_strdup_printf("(film_id IN (SELECT id FROM main.film_rolls WHERE folder LIKE '%s' OR folder LIKE '%s"
+                                  G_DIR_SEPARATOR_S "%%'))",
+                                  escaped_text, escaped_text);
+        }
+        // replace |% at the end with /% to only show subfolders
+        else if ((escaped_length > 1) && (strcmp(escaped_text+escaped_length-2, "|%") == 0 ))
+        {
+          escaped_text[escaped_length-2] = '\0';
+          query = g_strdup_printf("(film_id IN (SELECT id FROM main.film_rolls WHERE folder LIKE '%s"
+                                  G_DIR_SEPARATOR_S "%%'))",
+                                  escaped_text);
+        }
+        else
+        {
+          query = g_strdup_printf("(film_id IN (SELECT id FROM main.film_rolls WHERE folder LIKE '%s'))",
+                                  escaped_text);
+        }
+      }
       break;
 
     case DT_COLLECTION_PROP_COLORLABEL: // colorlabel
     {
       if(!(escaped_text && *escaped_text) || strcmp(escaped_text, "%") == 0)
-        query = dt_util_dstrcat(query, "(id IN (SELECT imgid FROM main.color_labels WHERE color IS NOT NULL))");
+        query = g_strdup_printf("(id IN (SELECT imgid FROM main.color_labels WHERE color IS NOT NULL))");
       else
       {
         int color = 0;
@@ -1420,7 +1505,7 @@ static gchar *get_query_string(const dt_collection_properties_t property, const 
           color = 3;
         else if(strcmp(escaped_text, _("purple")) == 0)
           color = 4;
-        query = dt_util_dstrcat(query, "(id IN (SELECT imgid FROM main.color_labels WHERE color=%d))", color);
+        query = g_strdup_printf("(id IN (SELECT imgid FROM main.color_labels WHERE color=%d))", color);
       }
     }
     break;
@@ -1447,14 +1532,30 @@ static gchar *get_query_string(const dt_collection_properties_t property, const 
       break;
 
     case DT_COLLECTION_PROP_GEOTAGGING: // geotagging
-      query = dt_util_dstrcat(query, "(id %s IN (SELECT id AS imgid FROM main.images WHERE "
-                                     "(longitude IS NOT NULL AND latitude IS NOT NULL))) ",
-                              (strcmp(escaped_text, _("tagged")) == 0) ? "" : "not");
+      {
+        const gboolean not_tagged = strcmp(escaped_text, _("not tagged")) == 0;
+        const gboolean no_location = strcmp(escaped_text, _("tagged")) == 0;
+        const gboolean all_tagged = strcmp(escaped_text, _("tagged*")) == 0;
+        char *escaped_text2 = g_strstr_len(escaped_text, -1, "|");
+        if(not_tagged || all_tagged)
+          query = g_strdup_printf("(id %s IN (SELECT id AS imgid FROM main.images "
+                                  "WHERE (longitude IS NOT NULL AND latitude IS NOT NULL))) ",
+                                  all_tagged ? "" : "not");
+        else
+          query = g_strdup_printf("(id IN (SELECT id AS imgid FROM main.images "
+                                         "WHERE (longitude IS NOT NULL AND latitude IS NOT NULL))"
+                                         "AND id %s IN (SELECT imgid FROM main.tagged_images AS ti"
+                                         "  JOIN data.tags AS t"
+                                         "  ON t.id = ti.tagid"
+                                         "     AND t.name LIKE \'%s\' || \'%s\')) ",
+                                  no_location ? "not" : "",
+                                  dt_map_location_data_tag_root(),
+                                  escaped_text2 ? escaped_text2 : "%");
+      }
       break;
 
     case DT_COLLECTION_PROP_LOCAL_COPY: // local copy
-      query = dt_util_dstrcat(query, "(id %s IN (SELECT id AS imgid FROM main.images WHERE "
-                                     "(flags & %d))) ",
+      query = g_strdup_printf("(id %s IN (SELECT id AS imgid FROM main.images WHERE (flags & %d))) ",
                               (strcmp(escaped_text, _("not copied locally")) == 0) ? "not" : "",
                               DT_IMAGE_LOCAL_COPY);
       break;
@@ -1467,14 +1568,14 @@ static gchar *get_query_string(const dt_collection_properties_t property, const 
       if(operator && strcmp(operator, "[]") == 0)
       {
         if(number1 && number2)
-          query = dt_util_dstrcat(query, "((aspect_ratio >= %s) AND (aspect_ratio <= %s))", number1, number2);
+          query = g_strdup_printf("((aspect_ratio >= %s) AND (aspect_ratio <= %s))", number1, number2);
       }
       else if(operator && number1)
-        query = dt_util_dstrcat(query, "(aspect_ratio %s %s)", operator, number1);
+        query = g_strdup_printf("(aspect_ratio %s %s)", operator, number1);
       else if(number1)
-        query = dt_util_dstrcat(query, "(aspect_ratio = %s)", number1);
+        query = g_strdup_printf("(aspect_ratio = %s)", number1);
       else
-        query = dt_util_dstrcat(query, "(aspect_ratio LIKE '%%%s%%')", escaped_text);
+        query = g_strdup_printf("(aspect_ratio LIKE '%%%s%%')", escaped_text);
 
       g_free(operator);
       g_free(number1);
@@ -1484,34 +1585,89 @@ static gchar *get_query_string(const dt_collection_properties_t property, const 
 
     case DT_COLLECTION_PROP_CAMERA: // camera
       // Start query with a false statement to avoid special casing the first condition
-      query = dt_util_dstrcat(query, "((1=0)");
+      query = g_strdup_printf("((1=0)");
       GList *lists = NULL;
       dt_collection_get_makermodels(text, NULL, &lists);
-      GList *element = lists;
-      while (element)
+      for(GList *element = lists; element; element = g_list_next(element))
       {
         GList *tuple = element->data;
-        char *mk = sqlite3_mprintf("%q", tuple->data);
-        char *md = sqlite3_mprintf("%q", tuple->next->data);
-        query = dt_util_dstrcat(query, " OR (maker = '%s' AND model = '%s')", mk, md);
-        sqlite3_free(mk);
-        sqlite3_free(md);
+        char *clause = sqlite3_mprintf(" OR (maker = '%q' AND model = '%q')", tuple->data, tuple->next->data);
+        query = dt_util_dstrcat(query, "%s", clause);
+        sqlite3_free(clause);
         g_free(tuple->data);
         g_free(tuple->next->data);
         g_list_free(tuple);
-        element = element->next;
       }
       g_list_free(lists);
       query = dt_util_dstrcat(query, ")");
       break;
+
     case DT_COLLECTION_PROP_TAG: // tag
-      query = dt_util_dstrcat(query, "(id IN (SELECT imgid FROM main.tagged_images AS a JOIN "
-                                     "data.tags AS b ON a.tagid = b.id WHERE name LIKE '%s'))",
-                              escaped_text);
-      break;
+    {
+      const gboolean is_insensitive =
+        dt_conf_is_equal("plugins/lighttable/tagging/case_sensitivity", "insensitive");
+
+      if(!strcmp(escaped_text, _("not tagged")))
+      {
+        query = g_strdup_printf("(id NOT IN (SELECT DISTINCT imgid FROM main.tagged_images AS a "
+                                       "JOIN data.tags AS b ON a.tagid = b.id "
+                                       "AND SUBSTR(name, 1, 10) <> 'darktable|'))");
+      }
+      else if(is_insensitive)
+      {
+        if ((escaped_length > 0) && (escaped_text[escaped_length-1] == '*'))
+        {
+          // shift-click adds an asterix * to include items in and under this hierarchy
+          // without using a wildcard % which also would include similar named items
+          escaped_text[escaped_length-1] = '\0';
+          query = g_strdup_printf("(id IN (SELECT imgid FROM main.tagged_images AS a "
+                                         "JOIN data.tags AS b ON a.tagid = b.id "
+                                         "WHERE name LIKE '%s' OR name LIKE '%s|%%'))",
+                                  escaped_text, escaped_text);
+        }
+        else
+        {
+          // default
+          query = g_strdup_printf("(id IN (SELECT imgid FROM main.tagged_images AS a JOIN "
+                                       "data.tags AS b ON a.tagid = b.id WHERE name LIKE '%s'))",
+                                  escaped_text);
+        }
+      }
+      else
+      {
+        if ((escaped_length > 0) && (escaped_text[escaped_length-1] == '*'))
+        {
+          // shift-click adds an asterix * to include items in and under this hierarchy
+          // without using a wildcard % which also would include similar named items
+          escaped_text[escaped_length-1] = '\0';
+          query = g_strdup_printf("(id IN (SELECT imgid FROM main.tagged_images AS a "
+                                         "JOIN data.tags AS b ON a.tagid = b.id "
+                                         "WHERE name = '%s'"
+                                         "  OR SUBSTR(name, 1, LENGTH('%s') + 1) = '%s|'))",
+                                  escaped_text, escaped_text, escaped_text);
+        }
+        else if ((escaped_length > 0) && (escaped_text[escaped_length-1] == '%'))
+        {
+          // ends with % or |%
+          escaped_text[escaped_length-1] = '\0';
+          query = g_strdup_printf("(id IN (SELECT imgid FROM main.tagged_images AS a "
+                                         "JOIN data.tags AS b ON a.tagid = b.id "
+                                         "WHERE SUBSTR(name, 1, LENGTH('%s')) = '%s'))",
+                                  escaped_text, escaped_text);
+        }
+        else
+        {
+          // default
+          query = g_strdup_printf("(id IN (SELECT imgid FROM main.tagged_images AS a JOIN "
+                                       "data.tags AS b ON a.tagid = b.id WHERE name = '%s'))",
+                                  escaped_text);
+        }
+      }
+    }
+    break;
 
     case DT_COLLECTION_PROP_LENS: // lens
-      query = dt_util_dstrcat(query, "(lens LIKE '%%%s%%')", escaped_text);
+      query = g_strdup_printf("(lens LIKE '%%%s%%')", escaped_text);
       break;
 
     case DT_COLLECTION_PROP_FOCAL_LENGTH: // focal length
@@ -1522,14 +1678,14 @@ static gchar *get_query_string(const dt_collection_properties_t property, const 
       if(operator && strcmp(operator, "[]") == 0)
       {
         if(number1 && number2)
-          query = dt_util_dstrcat(query, "((focal_length >= %s) AND (focal_length <= %s))", number1, number2);
+          query = g_strdup_printf("((focal_length >= %s) AND (focal_length <= %s))", number1, number2);
       }
       else if(operator && number1)
-        query = dt_util_dstrcat(query, "(focal_length %s %s)", operator, number1);
+        query = g_strdup_printf("(focal_length %s %s)", operator, number1);
       else if(number1)
-        query = dt_util_dstrcat(query, "(focal_length = %s)", number1);
+        query = g_strdup_printf("(CAST(focal_length AS INTEGER) = CAST(%s AS INTEGER))", number1);
       else
-        query = dt_util_dstrcat(query, "(focal_length LIKE '%%%s%%')", escaped_text);
+        query = g_strdup_printf("(focal_length LIKE '%%%s%%')", escaped_text);
 
       g_free(operator);
       g_free(number1);
@@ -1545,14 +1701,14 @@ static gchar *get_query_string(const dt_collection_properties_t property, const 
       if(operator && strcmp(operator, "[]") == 0)
       {
         if(number1 && number2)
-          query = dt_util_dstrcat(query, "((iso >= %s) AND (iso <= %s))", number1, number2);
+          query = g_strdup_printf("((iso >= %s) AND (iso <= %s))", number1, number2);
       }
       else if(operator && number1)
-        query = dt_util_dstrcat(query, "(iso %s %s)", operator, number1);
+        query = g_strdup_printf("(iso %s %s)", operator, number1);
       else if(number1)
-        query = dt_util_dstrcat(query, "(iso = %s)", number1);
+        query = g_strdup_printf("(iso = %s)", number1);
       else
-        query = dt_util_dstrcat(query, "(iso LIKE '%%%s%%')", escaped_text);
+        query = g_strdup_printf("(iso LIKE '%%%s%%')", escaped_text);
 
       g_free(operator);
       g_free(number1);
@@ -1568,15 +1724,15 @@ static gchar *get_query_string(const dt_collection_properties_t property, const 
       if(operator && strcmp(operator, "[]") == 0)
       {
         if(number1 && number2)
-          query = dt_util_dstrcat(query, "((ROUND(aperture,1) >= %s) AND (ROUND(aperture,1) <= %s))", number1,
+          query = g_strdup_printf("((ROUND(aperture,1) >= %s) AND (ROUND(aperture,1) <= %s))", number1,
                                   number2);
       }
       else if(operator && number1)
-        query = dt_util_dstrcat(query, "(ROUND(aperture,1) %s %s)", operator, number1);
+        query = g_strdup_printf("(ROUND(aperture,1) %s %s)", operator, number1);
       else if(number1)
-        query = dt_util_dstrcat(query, "(ROUND(aperture,1) = %s)", number1);
+        query = g_strdup_printf("(ROUND(aperture,1) = %s)", number1);
       else
-        query = dt_util_dstrcat(query, "(ROUND(aperture,1) LIKE '%%%s%%')", escaped_text);
+        query = g_strdup_printf("(ROUND(aperture,1) LIKE '%%%s%%')", escaped_text);
 
       g_free(operator);
       g_free(number1);
@@ -1592,18 +1748,17 @@ static gchar *get_query_string(const dt_collection_properties_t property, const 
       if(operator && strcmp(operator, "[]") == 0)
       {
         if(number1 && number2)
-          query = dt_util_dstrcat(query, "((exposure >= %s  - 1.0/100000) AND (exposure <= %s  + 1.0/100000))", number1,
+          query = g_strdup_printf("((exposure >= %s  - 1.0/100000) AND (exposure <= %s  + 1.0/100000))", number1,
                                   number2);
       }
       else if(operator && number1)
-        query = dt_util_dstrcat(query, "(exposure %s %s)", operator, number1);
+        query = g_strdup_printf("(exposure %s %s)", operator, number1);
       else if(number1)
-        query = dt_util_dstrcat(query,
-                                "(CASE WHEN exposure < 0.4 THEN ((exposure >= %s - 1.0/100000) AND  (exposure <= %s + 1.0/100000)) "
+        query = g_strdup_printf("(CASE WHEN exposure < 0.4 THEN ((exposure >= %s - 1.0/100000) AND  (exposure <= %s + 1.0/100000)) "
                                 "ELSE (ROUND(exposure,2) >= %s - 1.0/100000) AND (ROUND(exposure,2) <= %s + 1.0/100000) END)",
                                 number1, number1, number1, number1);
       else
-        query = dt_util_dstrcat(query, "(exposure LIKE '%%%s%%')", escaped_text);
+        query = g_strdup_printf("(exposure LIKE '%%%s%%')", escaped_text);
 
       g_free(operator);
       g_free(number1);
@@ -1613,20 +1768,25 @@ static gchar *get_query_string(const dt_collection_properties_t property, const 
 
     case DT_COLLECTION_PROP_FILENAME: // filename
     {
-      GList *list, *l;
-      list = dt_util_str_to_glist(",", escaped_text);
+      GList *list = dt_util_str_to_glist(",", escaped_text);
 
-      for (l = list; l != NULL; l = l->next)
-        l->data = dt_util_dstrcat(query, "(filename LIKE '%%%s%%')", (char *)l->data);
+      for (GList *l = list; l; l = g_list_next(l))
+      {
+        char *name = (char*)l->data;	// remember the original content of this list node
+        l->data = g_strdup_printf("(filename LIKE '%%%s%%')", name);
+        g_free(name);			// free the original filename
+      }
 
-      query = dt_util_glist_to_str(" OR ", list);
-      g_list_free(list);
+      char *subquery = dt_util_glist_to_str(" OR ", list);
+      query = g_strdup_printf("(%s)", subquery);
+      g_free(subquery);
+      g_list_free_full(list, g_free);	// free the SQL clauses as well as the list
 
       break;
     }
 
     case DT_COLLECTION_PROP_DAY:
-    // query = dt_util_dstrcat(query, "(datetime_taken like '%%%s%%')", escaped_text);
+    // query = dt_util_dstrcat(NULL, "(datetime_taken like '%%%s%%')", escaped_text);
     // break;
 
     case DT_COLLECTION_PROP_TIME:
@@ -1637,17 +1797,17 @@ static gchar *get_query_string(const dt_collection_properties_t property, const 
       if(strcmp(operator, "[]") == 0)
       {
         if(number1 && number2)
-          query = dt_util_dstrcat(query, "((datetime_taken >= '%s') AND (datetime_taken <= '%s'))", number1,
+          query = g_strdup_printf("((datetime_taken >= '%s' COLLATE NOCASE) AND (datetime_taken <= '%s' COLLATE NOCASE))", number1,
                                   number2);
       }
       else if((strcmp(operator, "=") == 0 || strcmp(operator, "") == 0) && number1)
-        query = dt_util_dstrcat(query, "(datetime_taken LIKE '%s')", number1);
+        query = g_strdup_printf("(datetime_taken LIKE '%s')", number1);
       else if(strcmp(operator, "<>") == 0 && number1)
-        query = dt_util_dstrcat(query, "(datetime_taken NOT LIKE '%s')", number1);
+        query = g_strdup_printf("(datetime_taken NOT LIKE '%s')", number1);
       else if(number1)
-        query = dt_util_dstrcat(query, "(datetime_taken %s '%s')", operator, number1);
+        query = g_strdup_printf("(datetime_taken %s '%s')", operator, number1);
       else
-        query = dt_util_dstrcat(query, "(datetime_taken LIKE '%%%s%%')", escaped_text);
+        query = g_strdup_printf("(datetime_taken LIKE '%%%s%%')", escaped_text);
 
       g_free(operator);
       g_free(number1);
@@ -1661,7 +1821,7 @@ static gchar *get_query_string(const dt_collection_properties_t property, const 
     case DT_COLLECTION_PROP_PRINT_TIMESTAMP:
     {
       const int local_property = property;
-      char *colname;
+      char *colname = NULL;
       gchar *operator, *number1, *number2;
 
       dt_collection_split_operator_datetime(escaped_text, &number1, &number2, &operator);
@@ -1716,10 +1876,9 @@ static gchar *get_query_string(const dt_collection_properties_t property, const 
           if(strcmp(escaped_text, _(dt_iop_order_string(i))) == 0) break;
         }
         if(i < DT_IOP_ORDER_LAST)
-          query = dt_util_dstrcat(query, "(id IN (SELECT imgid FROM main.module_order "
-                                         "WHERE version = %d))", i);
+          query = g_strdup_printf("(id IN (SELECT imgid FROM main.module_order WHERE version = %d))", i);
         else
-          query = dt_util_dstrcat(query, "(id NOT IN (SELECT imgid FROM main.module_order))");
+          query = g_strdup_printf("(id NOT IN (SELECT imgid FROM main.module_order))");
       }
       break;
 
@@ -1730,10 +1889,10 @@ static gchar *get_query_string(const dt_collection_properties_t property, const 
         {
           const int keyid = dt_metadata_get_keyid_by_display_order(property - DT_COLLECTION_PROP_METADATA);
           if(strcmp(escaped_text, _("not defined")) != 0)
-            query = dt_util_dstrcat(query, "(id IN (SELECT id FROM main.meta_data WHERE key = %d AND value "
+            query = g_strdup_printf("(id IN (SELECT id FROM main.meta_data WHERE key = %d AND value "
                                            "LIKE '%%%s%%'))", keyid, escaped_text);
           else
-            query = dt_util_dstrcat(query, "(id NOT IN (SELECT id FROM main.meta_data WHERE key = %d))",
+            query = g_strdup_printf("(id NOT IN (SELECT id FROM main.meta_data WHERE key = %d))",
                                            keyid);
         }
       }
@@ -1742,7 +1901,7 @@ static gchar *get_query_string(const dt_collection_properties_t property, const 
   sqlite3_free(escaped_text);
 
   if(!query) // We've screwed up and not done a query string, send a placeholder
-    query = dt_util_dstrcat(query, "(1=1)");
+    query = g_strdup_printf("(1=1)");
 
   return query;
 }
@@ -1783,7 +1942,6 @@ int dt_collection_serialize(char *buf, int bufsize)
 void dt_collection_deserialize(char *buf)
 {
   int num_rules = 0;
-  int mode = 0, item = 0;
   sscanf(buf, "%d", &num_rules);
   if(num_rules == 0)
   {
@@ -1794,13 +1952,14 @@ void dt_collection_deserialize(char *buf)
   }
   else
   {
+    int mode = 0, item = 0;
     dt_conf_set_int("plugins/lighttable/collect/num_rules", num_rules);
     while(buf[0] != '\0' && buf[0] != ':') buf++;
     if(buf[0] == ':') buf++;
     char str[400], confname[200];
     for(int k = 0; k < num_rules; k++)
     {
-      int n = sscanf(buf, "%d:%d:%399[^$]", &mode, &item, str);
+      const int n = sscanf(buf, "%d:%d:%399[^$]", &mode, &item, str);
       if(n == 3)
       {
         snprintf(confname, sizeof(confname), "plugins/lighttable/collect/mode%1d", k);
@@ -1835,32 +1994,43 @@ void dt_collection_deserialize(char *buf)
 void dt_collection_update_query(const dt_collection_t *collection, dt_collection_change_t query_change, GList *list)
 {
   int next = -1;
+  if(!collection->clone && query_change == DT_COLLECTION_CHANGE_NEW_QUERY && darktable.gui)
+  {
+    // if the query has changed, we reset the expanded group
+    darktable.gui->expanded_group_id = -1;
+  }
+
   if(!collection->clone)
   {
-    if(g_list_length(list) > 0)
+    if(list)
     {
       // for changing offsets, thumbtable needs to know the first untouched imageid after the list
       // we do this here
-      const int id0 = GPOINTER_TO_INT(g_list_nth_data(list, 0));
+
+      // 1. create a string with all the imgids of the list to be used inside IN sql query
       gchar *txt = NULL;
-      GList *l = g_list_first(list);
       int i = 0;
-      while(l)
+      for(GList *l = list; l; l = g_list_next(l))
       {
         const int id = GPOINTER_TO_INT(l->data);
         if(i == 0)
           txt = dt_util_dstrcat(txt, "%d", id);
         else
           txt = dt_util_dstrcat(txt, ",%d", id);
-        l = g_list_next(l);
         i++;
       }
+      // 2. search the first imgid not in the list but AFTER the list (or in a gap inside the list)
+      // we need to be carefull that some images in the list may not be present on screen (collapsed groups)
       gchar *query = dt_util_dstrcat(NULL,
-                                     "SELECT imgid FROM memory.collected_images "
-                                     "WHERE imgid NOT IN (%s) AND "
-                                     "rowid>(SELECT rowid FROM memory.collected_images WHERE imgid=%d) "
-                                     "ORDER BY rowid LIMIT 1",
-                                     txt, id0);
+                                     "SELECT imgid"
+                                     " FROM memory.collected_images"
+                                     " WHERE imgid NOT IN (%s)"
+                                     "  AND rowid > (SELECT rowid"
+                                     "              FROM memory.collected_images"
+                                     "              WHERE imgid IN (%s)"
+                                     "              ORDER BY rowid LIMIT 1)"
+                                     " ORDER BY rowid LIMIT 1",
+                                     txt, txt);
       sqlite3_stmt *stmt2;
       DT_DEBUG_SQLITE3_PREPARE_V2(dt_database_get(darktable.db), query, -1, &stmt2, NULL);
       if(sqlite3_step(stmt2) == SQLITE_ROW)
@@ -1869,6 +2039,27 @@ void dt_collection_update_query(const dt_collection_t *collection, dt_collection
       }
       sqlite3_finalize(stmt2);
       g_free(query);
+      // 3. if next is still unvalid, let's try to find the first untouched image BEFORE the list
+      if(next < 0)
+      {
+        query = dt_util_dstrcat(NULL,
+                                "SELECT imgid"
+                                " FROM memory.collected_images"
+                                " WHERE imgid NOT IN (%s)"
+                                "   AND rowid < (SELECT rowid"
+                                "                FROM memory.collected_images"
+                                "                WHERE imgid IN (%s)"
+                                "                ORDER BY rowid LIMIT 1)"
+                                " ORDER BY rowid DESC LIMIT 1",
+                                txt, txt);
+        DT_DEBUG_SQLITE3_PREPARE_V2(dt_database_get(darktable.db), query, -1, &stmt2, NULL);
+        if(sqlite3_step(stmt2) == SQLITE_ROW)
+        {
+          next = sqlite3_column_int(stmt2, 0);
+        }
+        sqlite3_finalize(stmt2);
+        g_free(query);
+      }
       g_free(txt);
     }
   }
@@ -1945,7 +2136,7 @@ void dt_collection_update_query(const dt_collection_t *collection, dt_collection
   if(!collection->clone)
   {
     dt_collection_memory_update();
-    dt_control_signal_raise(darktable.signals, DT_SIGNAL_COLLECTION_CHANGED, query_change, list, next);
+    DT_DEBUG_CONTROL_SIGNAL_RAISE(darktable.signals, DT_SIGNAL_COLLECTION_CHANGED, query_change, list, next);
   }
 }
 
@@ -1971,8 +2162,9 @@ void dt_collection_hint_message(const dt_collection_t *collection)
   /* collection hinting */
   gchar *message;
 
-  int c = dt_collection_get_count_no_group(collection);
-  int cs = dt_collection_get_selected_count(collection);
+  const int c = dt_collection_get_count_no_group(collection);
+  const int cs = dt_collection_get_selected_count(collection);
+  g_list_free(selected_imgids);
 
   if(cs == 1)
   {
@@ -2013,7 +2205,7 @@ static int dt_collection_image_offset_with_collection(const dt_collection_t *col
 
     while(sqlite3_step(stmt) == SQLITE_ROW)
     {
-      int id = sqlite3_column_int(stmt, 0);
+      const int id = sqlite3_column_int(stmt, 0);
       if(imgid == id)
       {
         found = TRUE;
@@ -2037,13 +2229,13 @@ int dt_collection_image_offset(int imgid)
 static void _dt_collection_recount_callback_1(gpointer instance, gpointer user_data)
 {
   dt_collection_t *collection = (dt_collection_t *)user_data;
-  int old_count = collection->count;
+  const int old_count = collection->count;
   collection->count = _dt_collection_compute_count(collection, FALSE);
   collection->count_no_group = _dt_collection_compute_count(collection, TRUE);
   if(!collection->clone)
   {
     if(old_count != collection->count) dt_collection_hint_message(collection);
-    dt_control_signal_raise(darktable.signals, DT_SIGNAL_COLLECTION_CHANGED, DT_COLLECTION_CHANGE_RELOAD, NULL, -1);
+    DT_DEBUG_CONTROL_SIGNAL_RAISE(darktable.signals, DT_SIGNAL_COLLECTION_CHANGED, DT_COLLECTION_CHANGE_RELOAD, NULL, -1);
   }
 }
 
@@ -2054,7 +2246,7 @@ static void _dt_collection_recount_callback_2(gpointer instance, uint8_t id, gpo
 static void _dt_collection_filmroll_imported_callback(gpointer instance, uint8_t id, gpointer user_data)
 {
   dt_collection_t *collection = (dt_collection_t *)user_data;
-  int old_count = collection->count;
+  const int old_count = collection->count;
   collection->count = _dt_collection_compute_count(collection, FALSE);
   collection->count_no_group = _dt_collection_compute_count(collection, TRUE);
   if(!collection->clone)
@@ -2064,7 +2256,7 @@ static void _dt_collection_filmroll_imported_callback(gpointer instance, uint8_t
   }
 }
 
-int64_t dt_collection_get_image_position(const int32_t image_id)
+int64_t dt_collection_get_image_position(const int32_t image_id, const int32_t tagid)
 {
   int64_t image_position = -1;
 
@@ -2074,11 +2266,12 @@ int64_t dt_collection_get_image_position(const int32_t image_id)
     gchar *image_pos_query = NULL;
     image_pos_query = dt_util_dstrcat(
           image_pos_query,
-          "SELECT position FROM main.images WHERE id = ?1");
+          tagid ? "SELECT position FROM main.tagged_images WHERE imgid = ?1 AND tagid = ?2"
+                : "SELECT position FROM main.images WHERE id = ?1");
 
     DT_DEBUG_SQLITE3_PREPARE_V2(dt_database_get(darktable.db), image_pos_query, -1, &stmt, NULL);
     DT_DEBUG_SQLITE3_BIND_INT(stmt, 1, image_id);
-
+    if(tagid) DT_DEBUG_SQLITE3_BIND_INT(stmt, 2, tagid);
     if(sqlite3_step(stmt) == SQLITE_ROW)
     {
       image_position = sqlite3_column_int64(stmt, 0);
@@ -2091,18 +2284,28 @@ int64_t dt_collection_get_image_position(const int32_t image_id)
   return image_position;
 }
 
-void dt_collection_shift_image_positions(const unsigned int length, const int64_t image_position)
+void dt_collection_shift_image_positions(const unsigned int length,
+                                         const int64_t image_position,
+                                         const int32_t tagid)
 {
   sqlite3_stmt *stmt = NULL;
 
   DT_DEBUG_SQLITE3_PREPARE_V2(dt_database_get(darktable.db),
+                              tagid
+                              ?
+                              "UPDATE main.tagged_images"
+                              " SET position = position + ?1"
+                              " WHERE position >= ?2 AND position < ?3"
+                              "       AND tagid = ?4"
+                              :
                               "UPDATE main.images"
                               " SET position = position + ?1"
-                              " WHERE position >= ?2 AND position < ?3", -1, &stmt, NULL);
+                              " WHERE position >= ?2 AND position < ?3",
+                              -1, &stmt, NULL);
   DT_DEBUG_SQLITE3_BIND_INT(stmt, 1, length);
   DT_DEBUG_SQLITE3_BIND_INT64(stmt, 2, image_position);
   DT_DEBUG_SQLITE3_BIND_INT64(stmt, 3, (image_position & 0xFFFFFFFF00000000) + (1ll << 32));
-
+  if(tagid) DT_DEBUG_SQLITE3_BIND_INT(stmt, 4, tagid);
   sqlite3_step(stmt);
   sqlite3_finalize(stmt);
 }
@@ -2135,19 +2338,14 @@ void dt_collection_move_before(const int32_t image_id, GList * selected_images)
     return;
   }
 
-  const guint selected_images_length = g_list_length(selected_images);
-
-  if (selected_images_length == 0)
-  {
-    return;
-  }
-
+  const uint32_t tagid = darktable.collection->tagid;
   // getting the position of the target image
-  const int64_t target_image_pos = dt_collection_get_image_position(image_id);
-
+  const int64_t target_image_pos = dt_collection_get_image_position(image_id, tagid);
   if (target_image_pos >= 0)
   {
-    dt_collection_shift_image_positions(selected_images_length, target_image_pos);
+    const guint selected_images_length = g_list_length(selected_images);
+
+    dt_collection_shift_image_positions(selected_images_length, target_image_pos, tagid);
 
     sqlite3_stmt *stmt = NULL;
     DT_DEBUG_SQLITE3_EXEC(dt_database_get(darktable.db), "BEGIN", NULL, NULL, NULL);
@@ -2156,18 +2354,26 @@ void dt_collection_move_before(const int32_t image_id, GList * selected_images)
     int64_t new_image_pos = target_image_pos;
 
     DT_DEBUG_SQLITE3_PREPARE_V2(dt_database_get(darktable.db),
+                                tagid
+                                ?
+                                "UPDATE main.tagged_images"
+                                " SET position = ?1"
+                                " WHERE imgid = ?2 AND tagid = ?3"
+                                :
                                 "UPDATE main.images"
                                 " SET position = ?1"
-                                " WHERE id = ?2", -1, &stmt, NULL);
+                                " WHERE id = ?2",
+                                -1, &stmt, NULL);
 
     for (const GList * selected_images_iter = selected_images;
-        selected_images_iter != NULL;
-        selected_images_iter = selected_images_iter->next)
+         selected_images_iter != NULL;
+         selected_images_iter = g_list_next(selected_images_iter))
     {
       const int moved_image_id = GPOINTER_TO_INT(selected_images_iter->data);
 
       DT_DEBUG_SQLITE3_BIND_INT64(stmt, 1, new_image_pos);
       DT_DEBUG_SQLITE3_BIND_INT(stmt, 2, moved_image_id);
+      if(tagid) DT_DEBUG_SQLITE3_BIND_INT(stmt, 3, tagid);
       sqlite3_step(stmt);
       sqlite3_reset(stmt);
       new_image_pos++;
@@ -2184,7 +2390,12 @@ void dt_collection_move_before(const int32_t image_id, GList * selected_images)
     int64_t max_position = -1;
 
     DT_DEBUG_SQLITE3_PREPARE_V2(dt_database_get(darktable.db),
-                                "SELECT MAX(position) FROM main.images", -1, &stmt, NULL);
+                                tagid
+                                ?
+                                "SELECT MAX(position) FROM main.tagged_images"
+                                :
+                                "SELECT MAX(position) FROM main.images",
+                                -1, &stmt, NULL);
 
     if (sqlite3_step(stmt) == SQLITE_ROW)
     {
@@ -2199,18 +2410,26 @@ void dt_collection_move_before(const int32_t image_id, GList * selected_images)
 
     // move images to last position in custom image order table
     DT_DEBUG_SQLITE3_PREPARE_V2(dt_database_get(darktable.db),
+                                tagid
+                                ?
+                                "UPDATE main.tagged_images"
+                                " SET position = ?1"
+                                " WHERE imgid = ?2 AND tagid = ?3"
+                                :
                                 "UPDATE main.images"
                                 " SET position = ?1"
-                                " WHERE id = ?2", -1, &update_stmt, NULL);
+                                " WHERE id = ?2",
+                                -1, &update_stmt, NULL);
 
     for (const GList * selected_images_iter = selected_images;
-        selected_images_iter != NULL;
-        selected_images_iter = selected_images_iter->next)
+         selected_images_iter != NULL;
+         selected_images_iter = g_list_next(selected_images_iter))
     {
       max_position++;
       const int moved_image_id = GPOINTER_TO_INT(selected_images_iter->data);
       DT_DEBUG_SQLITE3_BIND_INT64(update_stmt, 1, max_position << 32);
       DT_DEBUG_SQLITE3_BIND_INT(update_stmt, 2, moved_image_id);
+      if(tagid) DT_DEBUG_SQLITE3_BIND_INT(update_stmt, 3, tagid);
       sqlite3_step(update_stmt);
       sqlite3_reset(update_stmt);
     }

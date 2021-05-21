@@ -152,7 +152,7 @@ static int write_image(dt_imageio_module_data_t *data, const char *filename, con
 {
   dt_print_format_t *d = (dt_print_format_t *)data;
 
-  d->params->buf = (uint16_t *)malloc(d->head.width * d->head.height * 3 * (d->bpp == 8?1:2));
+  d->params->buf = (uint16_t *)malloc((size_t)3 * (d->bpp == 8?1:2) * d->head.width * d->head.height);
 
   if (d->bpp == 8)
   {
@@ -360,7 +360,8 @@ static int _print_job_run(dt_job_t *job)
   guint tagid = 0;
   snprintf (tag, sizeof(tag), "darktable|printed|%s", params->prt.printer.name);
   dt_tag_new(tag, &tagid);
-  dt_tag_attach_from_gui(tagid, params->imgid, FALSE, FALSE);
+  if(dt_tag_attach(tagid, params->imgid, FALSE, FALSE))
+    DT_DEBUG_CONTROL_SIGNAL_RAISE(darktable.signals, DT_SIGNAL_TAG_CHANGED);
 
   /* register print timestamp in cache */
   dt_image_cache_set_print_timestamp(darktable.image_cache, params->imgid);
@@ -389,8 +390,8 @@ _print_button_clicked (GtkWidget *widget, gpointer user_data)
   dt_lib_print_settings_t *ps = (dt_lib_print_settings_t *)self->data;
 
   int imgid = -1;
-  if(g_slist_length(dt_view_active_images_get()) > 0)
-    imgid = GPOINTER_TO_INT(g_slist_nth_data(dt_view_active_images_get(), 0));
+  if(dt_view_active_images_get())
+    imgid = GPOINTER_TO_INT(dt_view_active_images_get()->data);
 
   if (imgid == -1)
   {
@@ -509,11 +510,10 @@ static void _set_printer(const dt_lib_module_t *self, const char *printer_name)
   if(ps->paper_list) g_list_free_full(ps->paper_list, free);
 
   ps->paper_list = dt_get_papers (&ps->prt.printer);
-  GList *papers = ps->paper_list;
   int np = 0;
   gboolean ispaperset = FALSE;
 
-  while (papers)
+  for(const GList *papers = ps->paper_list; papers; papers = g_list_next (papers))
   {
     const dt_paper_info_t *p = (dt_paper_info_t *)papers->data;
     dt_bauhaus_combobox_add(ps->papers, p->common_name);
@@ -525,7 +525,6 @@ static void _set_printer(const dt_lib_module_t *self, const char *printer_name)
     }
 
     np++;
-    papers = g_list_next (papers);
   }
 
   //  paper not found in this printer
@@ -551,12 +550,11 @@ static void _set_printer(const dt_lib_module_t *self, const char *printer_name)
   if(ps->media_list) g_list_free_full(ps->media_list, free);
 
   ps->media_list = dt_get_media_type (&ps->prt.printer);
-  GList *media = ps->media_list;
   gboolean ismediaset = FALSE;
 
   np = 0;
 
-  while (media)
+  for(const GList *media = ps->media_list; media; media = g_list_next (media))
   {
     const dt_medium_info_t *m = (dt_medium_info_t *)media->data;
     dt_bauhaus_combobox_add(ps->media, m->common_name);
@@ -568,7 +566,6 @@ static void _set_printer(const dt_lib_module_t *self, const char *printer_name)
     }
 
     np++;
-    media = g_list_next (media);
   }
 
   //  media not found in this printer
@@ -912,8 +909,7 @@ _profile_changed(GtkWidget *widget, dt_lib_module_t *self)
 {
   dt_lib_print_settings_t *ps = (dt_lib_print_settings_t *)self->data;
   const int pos = dt_bauhaus_combobox_get(widget);
-  GList *prof = ps->profiles;
-  while(prof)
+  for(const GList *prof = ps->profiles; prof; prof = g_list_next(prof))
   {
     dt_lib_export_profile_t *pp = (dt_lib_export_profile_t *)prof->data;
     if(pp->pos == pos)
@@ -925,7 +921,6 @@ _profile_changed(GtkWidget *widget, dt_lib_module_t *self)
       ps->v_iccprofile = g_strdup(pp->filename);
       return;
     }
-    prof = g_list_next(prof);
   }
   dt_conf_set_int("plugins/print/print/icctype", DT_COLORSPACE_NONE);
   dt_conf_set_string("plugins/print/print/iccprofile", "");
@@ -939,8 +934,7 @@ _printer_profile_changed(GtkWidget *widget, dt_lib_module_t *self)
 {
   dt_lib_print_settings_t *ps = (dt_lib_print_settings_t *)self->data;
   const int pos = dt_bauhaus_combobox_get(widget);
-  GList *prof = ps->profiles;
-  while(prof)
+  for(const GList *prof = ps->profiles; prof; prof = g_list_next(prof))
   {
     dt_lib_export_profile_t *pp = (dt_lib_export_profile_t *)prof->data;
     if(pp->ppos == pos)
@@ -955,7 +949,6 @@ _printer_profile_changed(GtkWidget *widget, dt_lib_module_t *self)
       gtk_widget_set_sensitive(GTK_WIDGET(ps->black_point_compensation), TRUE);
       return;
     }
-    prof = g_list_next(prof);
   }
   dt_conf_set_int("plugins/print/printer/icctype", DT_COLORSPACE_NONE);
   dt_conf_set_string("plugins/print/printer/iccprofile", "");
@@ -1034,14 +1027,14 @@ static GList* _get_profiles ()
   dt_utf8_strlcpy(prof->name, _("sRGB (web-safe)"), sizeof(prof->name));
   prof->pos = -2;
   prof->ppos = -2;
-  list = g_list_append(list, prof);
+  list = g_list_prepend(list, prof);
 
   prof = (dt_lib_export_profile_t *)g_malloc0(sizeof(dt_lib_export_profile_t));
   prof->type = DT_COLORSPACE_ADOBERGB;
   dt_utf8_strlcpy(prof->name, _("Adobe RGB (compatible)"), sizeof(prof->name));
   prof->pos = -2;
   prof->ppos = -2;
-  list = g_list_append(list, prof);
+  list = g_list_prepend(list, prof);
 
   // add the profiles from datadir/color/out/*.icc
   for(GList *iter = darktable.color_profiles->profiles; iter; iter = g_list_next(iter))
@@ -1055,11 +1048,11 @@ static GList* _get_profiles ()
       prof->type = DT_COLORSPACE_FILE;
       prof->pos = -2;
       prof->ppos = -2;
-      list = g_list_append(list, prof);
+      list = g_list_prepend(list, prof);
     }
   }
 
-  return list;
+  return g_list_reverse(list);  // list was built in reverse order, so un-reverse it
 }
 
 static void _new_printer_callback(dt_printer_info_t *printer, void *user_data)
@@ -1089,13 +1082,13 @@ void view_enter(struct dt_lib_module_t *self,struct dt_view_t *old_view,struct d
 {
   // user activated a new image via the filmstrip or user entered view
   // mode which activates an image: get image_id and orientation
-  dt_control_signal_connect(darktable.signals, DT_SIGNAL_VIEWMANAGER_THUMBTABLE_ACTIVATE,
+  DT_DEBUG_CONTROL_SIGNAL_CONNECT(darktable.signals, DT_SIGNAL_VIEWMANAGER_THUMBTABLE_ACTIVATE,
                             G_CALLBACK(_print_settings_activate_or_update_callback), self);
 
   // when an updated mipmap, we may have new orientation information
   // about the current image. This updates the image_id as well and
   // zeros out dimensions, but there should be no harm in that
-  dt_control_signal_connect(darktable.signals,
+  DT_DEBUG_CONTROL_SIGNAL_CONNECT(darktable.signals,
                             DT_SIGNAL_DEVELOP_MIPMAP_UPDATED,
                             G_CALLBACK(_print_settings_activate_or_update_callback),
                             self);
@@ -1105,7 +1098,7 @@ void view_enter(struct dt_lib_module_t *self,struct dt_view_t *old_view,struct d
 
 void view_leave(struct dt_lib_module_t *self,struct dt_view_t *old_view,struct dt_view_t *new_view)
 {
-  dt_control_signal_disconnect(darktable.signals,
+  DT_DEBUG_CONTROL_SIGNAL_DISCONNECT(darktable.signals,
                                G_CALLBACK(_print_settings_activate_or_update_callback),
                                self);
 }
@@ -1116,7 +1109,7 @@ gui_init (dt_lib_module_t *self)
   dt_lib_print_settings_t *d = (dt_lib_print_settings_t*)malloc(sizeof(dt_lib_print_settings_t));
   self->data = d;
   self->widget = gtk_box_new(GTK_ORIENTATION_VERTICAL, 5);
-  dt_gui_add_help_link(self->widget, "print_chapter.html#print_overview");
+  dt_gui_add_help_link(self->widget, dt_get_help_url("print_overview"));
 
   char datadir[PATH_MAX] = { 0 };
   char confdir[PATH_MAX] = { 0 };
@@ -1167,7 +1160,7 @@ gui_init (dt_lib_module_t *self)
 
   label = dt_ui_section_label_new(_("printer"));
   gtk_box_pack_start(GTK_BOX(self->widget), label, TRUE, TRUE, 0);
-  dt_gui_add_help_link(self->widget, "print_usage.html#print_printer_section");
+  dt_gui_add_help_link(self->widget, dt_get_help_url("print_settings_printer"));
   d->printers = dt_bauhaus_combobox_new(NULL);
 
   gtk_box_pack_start(GTK_BOX(self->widget), d->printers, TRUE, TRUE, 0);
@@ -1177,7 +1170,7 @@ gui_init (dt_lib_module_t *self)
 
   d->media = dt_bauhaus_combobox_new(NULL);
 
-  dt_bauhaus_widget_set_label(d->media, NULL, _("media"));
+  dt_bauhaus_widget_set_label(d->media, NULL, N_("media"));
 
   g_signal_connect(G_OBJECT(d->media), "value-changed", G_CALLBACK(_media_changed), self);
   gtk_box_pack_start(GTK_BOX(self->widget), GTK_WIDGET(d->media), TRUE, TRUE, 0);
@@ -1185,10 +1178,9 @@ gui_init (dt_lib_module_t *self)
   //  Add printer profile combo
 
   d->pprofile = dt_bauhaus_combobox_new(NULL);
-  dt_bauhaus_widget_set_label(d->pprofile, NULL, _("profile"));
+  dt_bauhaus_widget_set_label(d->pprofile, NULL, N_("profile"));
 
   int combo_idx, n;
-  GList *l = d->profiles;
 
   gtk_box_pack_start(GTK_BOX(self->widget), GTK_WIDGET(d->pprofile), TRUE, TRUE, 0);
   int printer_profile_type = dt_conf_get_int("plugins/print/printer/icctype");
@@ -1197,7 +1189,7 @@ gui_init (dt_lib_module_t *self)
   n = 0;
 
   dt_bauhaus_combobox_add(d->pprofile, _("color management in printer driver"));
-  while(l)
+  for(const GList *l = d->profiles; l; l = g_list_next(l))
   {
     dt_lib_export_profile_t *prof = (dt_lib_export_profile_t *)l->data;
     // do not add built-in profiles, these are in no way for printing
@@ -1214,7 +1206,6 @@ gui_init (dt_lib_module_t *self)
         combo_idx = n;
       }
     }
-    l = g_list_next(l);
   }
 
   g_free (printer_profile);
@@ -1240,7 +1231,7 @@ gui_init (dt_lib_module_t *self)
   //  Add printer intent combo
 
   d->pintent = dt_bauhaus_combobox_new(NULL);
-  dt_bauhaus_widget_set_label(d->pintent, NULL, _("intent"));
+  dt_bauhaus_widget_set_label(d->pintent, NULL, N_("intent"));
   dt_bauhaus_combobox_add(d->pintent, _("perceptual"));
   dt_bauhaus_combobox_add(d->pintent, _("relative colorimetric"));
   dt_bauhaus_combobox_add(d->pintent, C_("rendering intent", "saturation"));
@@ -1269,11 +1260,11 @@ gui_init (dt_lib_module_t *self)
 
   label = dt_ui_section_label_new(_("page"));
   gtk_box_pack_start(GTK_BOX(self->widget), label, TRUE, TRUE, 0);
-  dt_gui_add_help_link(self->widget, "print_page_section.html#print_page_section");
+  dt_gui_add_help_link(self->widget, dt_get_help_url("print_settings_page"));
 
   //// papers
 
-  dt_bauhaus_widget_set_label(d->papers, NULL, _("paper size"));
+  dt_bauhaus_widget_set_label(d->papers, NULL, N_("paper size"));
 
   g_signal_connect(G_OBJECT(d->papers), "value-changed", G_CALLBACK(_paper_changed), self);
   gtk_box_pack_start(GTK_BOX(self->widget), GTK_WIDGET(d->papers), TRUE, TRUE, 0);
@@ -1281,7 +1272,7 @@ gui_init (dt_lib_module_t *self)
   //// portrait / landscape
 
   d->orientation = dt_bauhaus_combobox_new(NULL);
-  dt_bauhaus_widget_set_label(d->orientation, NULL, _("orientation"));
+  dt_bauhaus_widget_set_label(d->orientation, NULL, N_("orientation"));
   dt_bauhaus_combobox_add(d->orientation, _("portrait"));
   dt_bauhaus_combobox_add(d->orientation, _("landscape"));
 
@@ -1400,12 +1391,12 @@ gui_init (dt_lib_module_t *self)
 
   label = dt_ui_section_label_new(_("print settings"));
   gtk_box_pack_start(GTK_BOX(self->widget), label, TRUE, TRUE, 0);
-  dt_gui_add_help_link(self->widget, "print_settings.html#print_settings");
+  dt_gui_add_help_link(self->widget, dt_get_help_url("print_settings"));
 
   //  Add export profile combo
 
   d->profile = dt_bauhaus_combobox_new(NULL);
-  dt_bauhaus_widget_set_label(d->profile, NULL, _("profile"));
+  dt_bauhaus_widget_set_label(d->profile, NULL, N_("profile"));
 
   gtk_box_pack_start(GTK_BOX(self->widget), GTK_WIDGET(d->profile), TRUE, TRUE, 0);
   dt_bauhaus_combobox_add(d->profile, _("image settings"));
@@ -1415,8 +1406,7 @@ gui_init (dt_lib_module_t *self)
   combo_idx = -1;
   n = 0;
 
-  l = d->profiles;
-  while(l)
+  for(const GList *l = d->profiles; l; l = g_list_next(l))
   {
     dt_lib_export_profile_t *prof = (dt_lib_export_profile_t *)l->data;
     dt_bauhaus_combobox_add(d->profile, prof->name);
@@ -1428,7 +1418,6 @@ gui_init (dt_lib_module_t *self)
       d->v_iccprofile = g_strdup(iccprofile);
       combo_idx = n;
     }
-    l = g_list_next(l);
   }
 
   if (combo_idx == -1)
@@ -1453,7 +1442,7 @@ gui_init (dt_lib_module_t *self)
   //  Add export intent combo
 
   d->intent = dt_bauhaus_combobox_new(NULL);
-  dt_bauhaus_widget_set_label(d->intent, NULL, _("intent"));
+  dt_bauhaus_widget_set_label(d->intent, NULL, N_("intent"));
 
   dt_bauhaus_combobox_add(d->intent, _("image settings"));
   dt_bauhaus_combobox_add(d->intent, _("perceptual"));
@@ -1469,7 +1458,7 @@ gui_init (dt_lib_module_t *self)
   //  Add export style combo
 
   d->style = dt_bauhaus_combobox_new(NULL);
-  dt_bauhaus_widget_set_label(d->style, NULL, _("style"));
+  dt_bauhaus_widget_set_label(d->style, NULL, N_("style"));
 
   dt_bauhaus_combobox_add(d->style, _("none"));
 
@@ -1477,9 +1466,9 @@ gui_init (dt_lib_module_t *self)
   gchar *current_style = dt_conf_get_string("plugins/print/print/style");
   combo_idx = -1; n=0;
 
-  while (styles)
+  for(const GList *st_iter = styles; st_iter; st_iter = g_list_next(st_iter))
   {
-    dt_style_t *style=(dt_style_t *)styles->data;
+    dt_style_t *style=(dt_style_t *)st_iter->data;
     dt_bauhaus_combobox_add(d->style, style->name);
     n++;
     if (g_strcmp0(style->name,current_style)==0)
@@ -1488,7 +1477,6 @@ gui_init (dt_lib_module_t *self)
       d->v_style = g_strdup(current_style);
       combo_idx=n;
     }
-    styles=g_list_next(styles);
   }
   g_free(current_style);
   g_list_free_full(styles, dt_style_free);
@@ -1512,7 +1500,7 @@ gui_init (dt_lib_module_t *self)
   //  Whether to add/replace style items
 
   d->style_mode = dt_bauhaus_combobox_new(NULL);
-  dt_bauhaus_widget_set_label(d->style_mode, NULL, _("mode"));
+  dt_bauhaus_widget_set_label(d->style_mode, NULL, N_("mode"));
 
   dt_bauhaus_combobox_add(d->style_mode, _("replace history"));
   dt_bauhaus_combobox_add(d->style_mode, _("append history"));
@@ -1534,7 +1522,7 @@ gui_init (dt_lib_module_t *self)
   d->print_button = button;
   gtk_widget_set_tooltip_text(GTK_WIDGET(button), _("print with current settings"));
   gtk_box_pack_start(GTK_BOX(self->widget), GTK_WIDGET(button), TRUE, TRUE, 0);
-  dt_gui_add_help_link(GTK_WIDGET(button), "print_button.html#print_button");
+  dt_gui_add_help_link(GTK_WIDGET(button), dt_get_help_url("print_settings_button"));
 
   g_signal_connect (G_OBJECT (button), "clicked",
                     G_CALLBACK (_print_button_clicked),

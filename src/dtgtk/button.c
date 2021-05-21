@@ -55,71 +55,66 @@ static gboolean _button_draw(GtkWidget *widget, cairo_t *cr)
   else
     flags &= ~CPF_PRELIGHT;
 
-
-  /* create pango text settings if label exists */
-  PangoLayout *layout = NULL;
-  int pw = 0, ph = 0;
-  const gchar *text = gtk_button_get_label(GTK_BUTTON(widget));
-  if(text)
-  {
-    layout = gtk_widget_create_pango_layout(widget, NULL);
-    pango_layout_set_font_description(layout, darktable.bauhaus->pango_font_desc);
-    pango_cairo_context_set_resolution(pango_layout_get_context(layout), darktable.gui->dpi);
-    pango_layout_set_text(layout, text, -1);
-    pango_layout_get_pixel_size(layout, &pw, &ph);
-  }
-
   /* begin cairo drawing */
+  /* get button total allocation */
   GtkAllocation allocation;
   gtk_widget_get_allocation(widget, &allocation);
-  int width = allocation.width;
-  int height = allocation.height;
+  const int width = allocation.width;
+  const int height = allocation.height;
+
+  /* get the css geometry properties of the button */
+  GtkBorder margin, border, padding;
+  gtk_style_context_get_margin(context, state, &margin);
+  gtk_style_context_get_border(context, state, &border);
+  gtk_style_context_get_padding(context, state, &padding);
+
+  /* for button frame and background, we remove css margin from allocation */
+  int startx = margin.left;
+  int starty = margin.top;
+  int cwidth = width - margin.left - margin.right;
+  int cheight = height - margin.top - margin.bottom;
 
   /* draw standard button background if not transparent */
   if(flags & CPF_STYLE_FLAT)
   {
     if(flags & CPF_PRELIGHT)
-    {
-      gtk_render_background(context, cr, 0, 0, width, height);
-    }
+      gtk_render_background(context, cr, startx, starty, cwidth, cheight);
     else if (!(flags & CPF_ACTIVE))
-    {
       fg_color.alpha = CLAMP(fg_color.alpha / 2.0, 0.3, 1.0);
-    }
   }
   else if(!(flags & CPF_BG_TRANSPARENT))
-  {
-    /* draw default boxed button */
-    gtk_render_background(context, cr, 0, 0, width, height);
-    if(!(flags & CPF_DO_NOT_USE_BORDER))
-      gtk_render_frame(context, cr, 0, 0, width, height);
-  }
+    gtk_render_background(context, cr, startx, starty, cwidth, cheight);
 
+  gtk_render_frame(context, cr, startx, starty, cwidth, cheight);
   gdk_cairo_set_source_rgba(cr, &fg_color);
 
   /* draw icon */
   if(DTGTK_BUTTON(widget)->icon)
   {
-    /* set inner border and icon size */
-    float f_border = ((flags & CPF_DO_NOT_USE_BORDER) ? 4.0 : 6.0);
-    int border = round(f_border);
-    int icon_width = round(text ? height - (f_border * 2) : width - (f_border * 2));
-    int icon_height = round(height - (f_border * 2));
+    /* calculate the button content allocation */
+    startx += border.left + padding.left;
+    starty += border.top + padding.top;
+    cwidth -= border.left + border.right + padding.left + padding.right;
+    cheight -= border.top + border.bottom + padding.top + padding.bottom;
+
+    /* we have to leave some breathing room to the cairo icon paint function to possibly    */
+    /* draw slightly outside the bounding box, for optical alignment and balancing of icons */
+    /* we do this by putting a drawing area widget inside the button and using the CSS      */
+    /* margin property in px of the drawing area as extra room in percent (DPI safe)        */
+    /* we do this because Gtk+ does not support CSS size in percent                         */
+    /* this extra margin can be also (slightly) negative                                    */
+    GtkStyleContext *ccontext = gtk_widget_get_style_context(DTGTK_BUTTON(widget)->canvas);
+    GtkBorder cmargin;
+    gtk_style_context_get_margin(ccontext, state, &cmargin);
+
+    startx += round(cmargin.left * cwidth / 100.0f);
+    starty += round(cmargin.top * cheight / 100.0f);
+    cwidth = round((float)cwidth * (1.0 - (cmargin.left + cmargin.right) / 100.0f));
+    cheight = round((float)cheight * (1.0 - (cmargin.top + cmargin.bottom) / 100.0f));
 
     void *icon_data = DTGTK_BUTTON(widget)->icon_data;
-    if(icon_width > 0 && icon_height > 0)
-      DTGTK_BUTTON(widget)->icon(cr, border, border, icon_width, icon_height, flags, icon_data);
-  }
-
-  /* draw label */
-  if(text)
-  {
-    int lx = DT_PIXEL_APPLY_DPI(2), ly = ((height / 2.0) - (ph / 2.0));
-    if(DTGTK_BUTTON(widget)->icon) lx += width;
-    cairo_move_to(cr, lx, ly);
-    cairo_set_source_rgba(cr, 1.0, 1.0, 1.0, 0.5);
-    pango_cairo_show_layout(cr, layout);
-    g_object_unref(layout);
+    if(cwidth > 0 && cheight > 0)
+      DTGTK_BUTTON(widget)->icon(cr, startx, starty, cwidth, cheight, flags, icon_data);
   }
 
   return FALSE;
@@ -133,7 +128,10 @@ GtkWidget *dtgtk_button_new(DTGTKCairoPaintIconFunc paint, gint paintflags, void
   button->icon = paint;
   button->icon_flags = paintflags;
   button->icon_data = paintdata;
+  button->canvas = gtk_drawing_area_new();
+  gtk_container_add(GTK_CONTAINER(button), button->canvas);
   gtk_widget_set_name(GTK_WIDGET(button), "dt-button");
+  gtk_widget_set_name(GTK_WIDGET(button->canvas), "button-canvas");
   return (GtkWidget *)button;
 }
 
@@ -156,6 +154,7 @@ GType dtgtk_button_get_type()
 
 void dtgtk_button_set_paint(GtkDarktableButton *button, DTGTKCairoPaintIconFunc paint, gint paintflags, void *paintdata)
 {
+  g_return_if_fail(button != NULL);
   button->icon = paint;
   button->icon_flags = paintflags;
   button->icon_data = paintdata;
@@ -163,6 +162,7 @@ void dtgtk_button_set_paint(GtkDarktableButton *button, DTGTKCairoPaintIconFunc 
 
 void dtgtk_button_set_active(GtkDarktableButton *button, gboolean active)
 {
+  g_return_if_fail(button != NULL);
   if(active)
     button->icon_flags |= CPF_ACTIVE;
   else
@@ -171,6 +171,7 @@ void dtgtk_button_set_active(GtkDarktableButton *button, gboolean active)
 
 void dtgtk_button_override_color(GtkDarktableButton *button, GdkRGBA *color)
 {
+  g_return_if_fail(button != NULL);
   if(color)
   {
     button->fg = *color;
@@ -182,6 +183,7 @@ void dtgtk_button_override_color(GtkDarktableButton *button, GdkRGBA *color)
 
 void dtgtk_button_override_background_color(GtkDarktableButton *button, GdkRGBA *color)
 {
+  g_return_if_fail(button != NULL);
   if(color)
   {
     button->bg = *color;
